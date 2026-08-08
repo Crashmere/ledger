@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-ssr/
+*.local
+
+# 本地数据库文件（OPFS 在浏览器内，不入库；桌面 .db / 导出文件也不提交）
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+
+# 密钥 / 令牌（云备份 token 存 setting 表，绝不进代码）
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.log
