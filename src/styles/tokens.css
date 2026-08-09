@@ -1,0 +1,297 @@
+/* ============================================================
+   记账 · 设计系统（从 设计稿/assets/app.css 移植）
+   S2 4.1：把设计 token（CSS 变量）与会复用的组件类搬进 src/，
+   使页面能直接用上 --primary、--surface、--fs 层级，以及
+   .pill、.segmented、.amount-display、.numpad、.btn 等既有样式，视觉与设计稿一致。
+   —— 仅移植记账 App 真正会用到的部分（外壳/通用组件/记一笔）；
+      展示画布用的 gallery/canvas 脚手架不搬。
+   ============================================================ */
+
+/* ---------- 1. Design Tokens ---------- */
+:root {
+  /* 品牌 / 语义色 */
+  --primary: #1a73e8;
+  --primary-strong: #1558c0;
+  --primary-fg: #ffffff;
+  --primary-soft: #e8f0fe;
+
+  /* 收支语义色（金额正负） */
+  --income: #1e8e3e;      /* 流入 / 收入：绿 */
+  --income-soft: #e6f4ea;
+  --expense: #d93025;     /* 流出 / 支出：红 */
+  --expense-soft: #fce8e6;
+  --transfer: #6c5ce7;    /* 转账：靛紫，区别于收支 */
+  --transfer-soft: #ecebfc;
+
+  /* 图表色（谷歌数据可视化） */
+  --chart-1: #4285f4;
+  --chart-2: #ea4335;
+  --chart-3: #fbbc05;
+  --chart-4: #34a853;
+  --chart-5: #ab47bc;
+  --chart-6: #00acc1;
+  --chart-7: #ff7043;
+
+  /* 中性表面 */
+  --bg: #f6f8fc;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --surface-3: #e8ecf3;
+  --sidebar-bg: #ffffff;
+
+  --fg: #1f2329;
+  --fg-2: #5f6368;
+  --fg-3: #9aa0a6;
+  --border: #e3e7ee;
+  --border-strong: #d3d8e0;
+  --ring: rgba(26, 115, 232, 0.35);
+
+  /* 账户标识色 */
+  --acc-life: #1e8e3e;     /* 生活费 */
+  --acc-consume: #f29900;  /* 消费 */
+  --acc-salary: #1a73e8;   /* 工资 */
+  --acc-side: #9334e6;     /* 副业 */
+
+  /* 字体 */
+  --font-sans: "DM Sans", "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  /* 字号层级 */
+  --fs-display: 44px;
+  --fs-h1: 26px;
+  --fs-h2: 20px;
+  --fs-h3: 16px;
+  --fs-body: 14px;
+  --fs-sm: 13px;
+  --fs-xs: 11px;
+
+  /* 间距体系（4px 基准） */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+
+  /* 圆角 */
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px; --r-pill: 999px;
+
+  /* 阴影（扁平克制） */
+  --sh-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --sh-2: 0 2px 6px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.06);
+  --sh-3: 0 10px 24px rgba(16, 24, 40, 0.12);
+  --sh-fab: 0 6px 16px rgba(26, 115, 232, 0.4);
+
+  --tab-h: 60px;
+}
+
+/* 深色模式（保留 token，S2 暂不主动切换） */
+.dark, .theme-dark {
+  --primary: #8ab4f8;
+  --primary-strong: #aecbfa;
+  --primary-fg: #0b1220;
+  --primary-soft: #1e2a3d;
+
+  --income: #81c995;
+  --income-soft: #17301f;
+  --expense: #f28b82;
+  --expense-soft: #33211f;
+  --transfer: #b39ddb;
+  --transfer-soft: #241f36;
+
+  --bg: #17181c;
+  --surface: #202124;
+  --surface-2: #282a2e;
+  --surface-3: #303236;
+  --sidebar-bg: #202124;
+
+  --fg: #e8eaed;
+  --fg-2: #bdc1c6;
+  --fg-3: #9aa0a6;
+  --border: #34363b;
+  --border-strong: #43464c;
+  --ring: rgba(138, 180, 248, 0.4);
+}
+
+/* ---------- 2. Reset / Base ---------- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #app { height: 100%; }
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.45;
+}
+.num { font-family: var(--font-mono); font-feature-settings: "tnum"; letter-spacing: -0.01em; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+button:disabled { cursor: not-allowed; }
+a { color: inherit; text-decoration: none; }
+svg { display: block; }
+.pos { color: var(--income); }
+.neg { color: var(--expense); }
+.tr  { color: var(--transfer); }
+.muted { color: var(--fg-2); }
+.faint { color: var(--fg-3); }
+
+/* ---------- 3. 桌面外壳：侧边栏 + 主区 ---------- */
+.app { display: flex; width: 100%; height: 100%; overflow: hidden; }
+.sidebar {
+  width: 220px; flex-shrink: 0; background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 18px 14px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
+.brand-logo {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--primary), var(--transfer));
+  display: grid; place-items: center; color: #fff; flex-shrink: 0;
+}
+.brand-name { font-weight: 700; font-size: 15px; }
+.brand-sub { font-size: var(--fs-xs); color: var(--fg-3); }
+
+.nav-add {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--primary); color: var(--primary-fg);
+  font-weight: 700; padding: 12px; border-radius: var(--r-md);
+  box-shadow: var(--sh-2); margin-bottom: 16px; width: 100%;
+}
+.nav-add:hover { background: var(--primary-strong); }
+
+.nav-list { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--r-md);
+  color: var(--fg-2); font-weight: 500;
+}
+.nav-item svg { width: 20px; height: 20px; }
+.nav-item:hover { background: var(--surface-2); color: var(--fg); }
+.nav-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+
+.sidebar-foot { border-top: 1px solid var(--border); padding-top: 12px; }
+.user-chip { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-md); }
+.avatar-pair { display: flex; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--surface); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+
+/* 主区 */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+  background: var(--surface); display: flex; align-items: center;
+  gap: 16px; padding: 0 22px;
+}
+.page-title { font-size: var(--fs-h2); font-weight: 700; }
+.topbar-search {
+  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border-radius: var(--r-pill);
+  padding: 8px 14px; color: var(--fg-3); width: 240px;
+}
+.topbar-search input { background: none; border: none; outline: none; width: 100%; color: var(--fg); }
+
+.content { flex: 1; overflow: auto; padding: 22px; }
+.content::-webkit-scrollbar { width: 8px; }
+.content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+
+/* ---------- 4. 通用组件 ---------- */
+/* 卡片 */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.card-pad { padding: var(--sp-5); }
+
+/* 按钮 */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; border-radius: var(--r-md); padding: 10px 18px; transition: 0.12s; white-space: nowrap; }
+.btn svg { width: 18px; height: 18px; }
+.btn-primary { background: var(--primary); color: var(--primary-fg); box-shadow: var(--sh-1); }
+.btn-primary:hover { background: var(--primary-strong); }
+.btn-primary:disabled { background: var(--border-strong); box-shadow: none; }
+.btn-secondary { background: var(--primary-soft); color: var(--primary); }
+.btn-secondary:hover { filter: brightness(0.97); }
+.btn-ghost { background: transparent; color: var(--fg-2); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--surface-2); }
+.btn-danger { background: var(--expense); color: #fff; }
+.btn-lg { padding: 14px 22px; font-size: 16px; }
+.btn-sm { padding: 7px 12px; font-size: var(--fs-sm); }
+.btn-block { width: 100%; }
+
+/* Pill / Chip */
+.pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-pill); padding: 7px 12px; font-size: var(--fs-sm);
+  font-weight: 600; color: var(--fg); white-space: nowrap;
+}
+.pill .p-key { color: var(--fg-3); font-weight: 500; }
+.pill .caret { color: var(--fg-3); }
+.pill:hover { border-color: var(--border-strong); }
+.pill.pill-active { background: var(--primary-soft); border-color: transparent; color: var(--primary); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill); padding: 6px 12px; font-size: var(--fs-sm); font-weight: 600;
+}
+.chip .x { color: var(--fg-3); font-weight: 700; }
+.chip-add { border-style: dashed; color: var(--fg-2); }
+.chip-on { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* 输入 */
+.input { width: 100%; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: 10px 12px; outline: none; transition: 0.12s; }
+.input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--ring); }
+.field-label { font-size: var(--fs-sm); font-weight: 600; color: var(--fg-2); margin-bottom: 6px; display: block; }
+
+/* 分段控件（类型切换） */
+.segmented { display: flex; background: var(--surface-2); border-radius: var(--r-md); padding: 4px; gap: 4px; }
+.segmented .seg { flex: 1; text-align: center; padding: 9px 0; border-radius: 7px; font-weight: 700; color: var(--fg-2); font-size: var(--fs-body); display: flex; align-items: center; justify-content: center; gap: 6px; }
+.segmented .seg svg { width: 16px; height: 16px; }
+.segmented .seg.on-expense { background: var(--surface); color: var(--expense); box-shadow: var(--sh-1); }
+.segmented .seg.on-income { background: var(--surface); color: var(--income); box-shadow: var(--sh-1); }
+.segmented .seg.on-transfer { background: var(--surface); color: var(--transfer); box-shadow: var(--sh-1); }
+
+/* 图标底片（账户/分类色标） */
+.ic-tile { width: 38px; height: 38px; border-radius: var(--r-md); display: grid; place-items: center; color: #fff; flex-shrink: 0; }
+.ic-tile.sm { width: 30px; height: 30px; border-radius: 8px; }
+.ic-tile.lg { width: 46px; height: 46px; border-radius: var(--r-lg); }
+.ic-tile svg { width: 20px; height: 20px; }
+.ic-tile.sm svg { width: 16px; height: 16px; }
+
+/* 数字键盘（记一笔核心） */
+.numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.numpad .key {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); font-size: 22px; font-weight: 600;
+  display: grid; place-items: center; height: 100%;
+  font-family: var(--font-mono);
+}
+.numpad .key:hover { background: var(--surface-2); }
+.numpad .key:active { background: var(--surface-3); }
+.numpad .key.util { color: var(--fg-2); font-family: var(--font-sans); font-size: 16px; }
+.numpad .key.accent { color: var(--primary); }
+
+/* 金额显示 */
+.amount-display { text-align: center; padding: 8px 0; }
+.amount-display .cur { font-size: 24px; font-weight: 700; color: var(--fg-3); vertical-align: super; }
+.amount-display .val { font-size: 52px; font-weight: 800; letter-spacing: -0.02em; }
+.amount-display.expense .val { color: var(--expense); }
+.amount-display.income .val { color: var(--income); }
+.amount-display.transfer .val { color: var(--transfer); }
+.amount-display .expr { font-size: var(--fs-sm); color: var(--fg-3); height: 18px; }
+
+/* 空状态 */
+.empty { text-align: center; padding: 40px 20px; color: var(--fg-3); }
+.empty svg { width: 48px; height: 48px; margin: 0 auto 12px; opacity: 0.5; }
+
+/* 分隔线 */
+.divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+/* ---------- 5. 工具类 ---------- */
+.stack { display: flex; flex-direction: column; }
+.row { display: flex; align-items: center; }
+.gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.mt-2 { margin-top: 8px; } .mt-3 { margin-top: 12px; } .mt-4 { margin-top: 16px; } .mt-5 { margin-top: 20px; }
+.wrap { flex-wrap: wrap; }
+
+/* ---------- 6. 记一笔专用（从 add.html 内联 <style> 移植） ---------- */
+.pill-row { display: flex; gap: 8px; }
+.pill-row .pill { flex: 1; justify-content: center; }
+.note-inline { display: flex; align-items: center; gap: 10px; background: var(--surface-2); border-radius: var(--r-md); padding: 10px 12px; }
+.note-inline input { background: none; border: none; outline: none; width: 100%; color: var(--fg); font-size: var(--fs-body); }
+.note-inline svg { width: 18px; height: 18px; color: var(--fg-3); flex-shrink: 0; }
+/* 桌面记一笔卡片 */
+.add-card { width: 440px; margin: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--sh-2); overflow: hidden; }
