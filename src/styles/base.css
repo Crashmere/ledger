@@ -1,3 +1,5 @@
 /* S2 4.1：设计系统已移植到 ./tokens.css（token + 组件类 + 记一笔专用样式）。
-   本文件只做转发，保持 main.ts 的 import 入口稳定。 */
+   本文件只做转发，保持 main.ts 的 import 入口稳定。
+   S6：字体改为自托管（./fonts.css），断网可用；先于 tokens 引入以尽早声明 @font-face。 */
+@import "./fonts.css";
 @import "./tokens.css";

@@ -1,106 +1,99 @@
 // ============================================================
-// adapter.web.ts —— SqliteAdapter 的 Web 实现（sqlite-wasm + OPFS，Worker 版）
+// adapter.web.ts —— SqliteAdapter 的 Web 实现（sqlite-wasm + OPFS-SAHPool VFS，Worker 版）
 // ============================================================
-// 权威来源：06-接口契约.ts §1（SqliteAdapter）、S0 任务书 §三/§四。
+// 权威来源：06-接口契约.ts §1（SqliteAdapter）、S6 任务书 §四.1。
 // 关键约定：
 //   - 数据库文件持久化到 OPFS，刷新页面数据不丢。
 //   - 每个连接建立后立即执行 PRAGMA foreign_keys = ON。
 //   - 上层只依赖 SqliteAdapter 接口，绝不 import 本文件之外的 sqlite 驱动。
 //
-// VFS 选型：用官方 Worker1 Promiser（sqlite3Worker1Promiser）+ OPFS VFS。
-//   经典 oo1.OpfsDb 依赖 Atomics.wait()、SAHPool 依赖 createSyncAccessHandle()，
-//   二者都只能在 Worker 线程用，主线程会报 "Atomics.wait/Missing OPFS APIs"。
-//   因此让 SQLite 跑在专用 Worker 里，主线程通过 Promise 消息与之通信——
-//   这与本 adapter 的全异步接口天然契合。
-//   仍需页面跨源隔离（COOP/COEP，见 vite.config.ts）以获得 SharedArrayBuffer。
+// VFS 选型（S6 起）：opfs-sahpool VFS（installOpfsSAHPoolVfs + oo1 OpfsSAHPoolDb），
+//   跑在**专用 Worker**里（见 sqlite.worker.ts，方案 B）。
+//   为什么用 Worker：SAHPool 依赖 createSyncAccessHandle()，此 API 在多数浏览器
+//   **只在 Worker 线程可用**，主线程会报 "Missing required OPFS APIs"。
+//   关键区别：SAHPool **不依赖 Atomics.wait / SharedArrayBuffer**，所以即便在 Worker
+//   里也**无需页面跨源隔离（COOP/COEP）**——纯静态托管（GitHub Pages）也能持久化。
+//   本 adapter 通过 postMessage/Promise 与 Worker 通信，与全异步接口天然契合。
 // ============================================================
 
-import { sqlite3Worker1Promiser } from '@sqlite.org/sqlite-wasm';
 import type { SqliteAdapter } from './adapter';
+import SqliteWorker from './sqlite.worker?worker';
 
-/** Worker1 promiser 的响应信封。 */
-interface Worker1Response<R = unknown> {
-  type: string;
-  result: R;
-  dbId?: string;
+/** Worker 回给主线程的响应信封。 */
+interface WorkerResponse {
+  id: number;
+  ok: boolean;
+  result?: unknown;
+  error?: { message: string; name: string };
 }
-
-/** exec 返回的 result 结构（我们只关心 resultRows）。 */
-interface ExecResult {
-  resultRows?: Record<string, unknown>[];
-}
-
-/** open 返回的 result 结构。 */
-interface OpenResult {
-  dbId: string;
-  filename: string;
-  persistent: boolean;
-  vfs: string;
-}
-
-/** promiser 工厂：promiser(type, args) => Promise<response>。 */
-type Promiser = <R = unknown>(
-  type: string,
-  args: Record<string, unknown>,
-) => Promise<Worker1Response<R>>;
-
-/** OPFS 中的数据库文件名。桌面端（S12）另有 .db 磁盘文件，与此无关。 */
-const DB_FILENAME = 'ivy-wallet.sqlite3';
 
 export class WebSqliteAdapter implements SqliteAdapter {
-  private promiser: Promiser | null = null;
-  private dbId: string | null = null;
+  private worker: Worker | null = null;
+  private seq = 0;
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   /** 事务嵌套深度：用 SAVEPOINT 支持嵌套，深度 0 时用最外层 BEGIN/COMMIT。 */
   private txDepth = 0;
+  private initPromise: Promise<void> | null = null;
 
   async init(): Promise<void> {
-    if (this.promiser) return; // 幂等：已初始化直接返回。
+    // 幂等：并发/重复调用只真正初始化一次。
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
 
-    // 用官方默认 worker 配置（包内以 new Worker(new URL(...)) 声明，
-    // Vite 会自动把 worker 及其 wasm 资源打包并正确定位 URL）。
-    const promiser = (await sqlite3Worker1Promiser.v2()) as unknown as Promiser;
-    this.promiser = promiser;
+  private async doInit(): Promise<void> {
+    const worker = new SqliteWorker();
+    worker.onmessage = (ev: MessageEvent<WorkerResponse>) => this.onMessage(ev.data);
+    worker.onerror = (ev: ErrorEvent) => {
+      // Worker 级致命错误：拒绝所有在途请求，避免永久挂起。
+      const err = new Error(`SQLite worker 错误：${ev.message}`);
+      for (const [, p] of this.pending) p.reject(err);
+      this.pending.clear();
+    };
+    this.worker = worker;
+    // 触发 Worker 内的 wasm 载入 + SAHPool 安装 + 建库 + PRAGMA foreign_keys=ON。
+    await this.call('init');
+  }
 
-    // 打开（不存在则创建）OPFS 持久化库文件。
-    const opened = await promiser<OpenResult>('open', {
-      filename: `file:${DB_FILENAME}?vfs=opfs`,
+  private onMessage(msg: WorkerResponse): void {
+    const p = this.pending.get(msg.id);
+    if (!p) return;
+    this.pending.delete(msg.id);
+    if (msg.ok) {
+      p.resolve(msg.result);
+    } else {
+      // 还原为 Error 实例，并保留底层 message（S1 服务层据 "FOREIGN KEY constraint failed"
+      // 识别 RESTRICT）与 errorClass 名称。
+      const err = new Error(msg.error?.message ?? '未知的 SQLite 错误');
+      if (msg.error?.name) err.name = msg.error.name;
+      p.reject(err);
+    }
+  }
+
+  /** 向 Worker 发一条请求并等待其响应。 */
+  private call(method: 'init' | 'export'): Promise<unknown>;
+  private call(method: 'exec', sql: string, params: unknown[]): Promise<unknown>;
+  private call(method: string, sql?: string, params?: unknown[]): Promise<unknown> {
+    const worker = this.worker;
+    if (!worker) {
+      return Promise.reject(new Error('SqliteAdapter 尚未初始化，请先调用 init()。'));
+    }
+    const id = ++this.seq;
+    return new Promise<unknown>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      worker.postMessage({ id, method, sql, params });
     });
-    this.dbId = opened.result.dbId;
-
-    if (!opened.result.persistent) {
-      throw new Error(
-        `OPFS 持久化未生效（当前 VFS=${opened.result.vfs}）：请确认运行环境支持 OPFS 且页面已跨源隔离（COOP/COEP）。`,
-      );
-    }
-
-    // 每个连接建立后立即打开外键，否则 RESTRICT/SET NULL/CASCADE 全部失效。
-    await this.exec('PRAGMA foreign_keys = ON;');
   }
 
-  private requireReady(): { promiser: Promiser; dbId: string } {
-    if (!this.promiser || !this.dbId) {
-      throw new Error('SqliteAdapter 尚未初始化，请先调用 init()。');
-    }
-    return { promiser: this.promiser, dbId: this.dbId };
-  }
-
-  /** 底层 exec 封装：统一走 worker，返回对象行数组。 */
+  /** 底层 exec：返回**对象行**数组，键顺序 = SELECT 列顺序（防 Drizzle 列错位）。 */
   private async exec(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    const { promiser, dbId } = this.requireReady();
-    try {
-      const resp = await promiser<ExecResult>('exec', {
-        dbId,
-        sql,
-        bind: params.length ? params : undefined,
-        rowMode: 'object',
-        resultRows: [],
-      });
-      return resp.result.resultRows ?? [];
-    } catch (e) {
-      // Worker1 promiser 在出错时 reject 的是响应信封，而非 Error 实例；
-      // 归一化为真正的 Error，让上层（S1）能按 message 识别外键 RESTRICT 等。
-      throw normalizeWorkerError(e);
-    }
+    const rows = (await this.call('exec', sql, params)) as Record<string, unknown>[];
+    return rows ?? [];
   }
 
   async run(sql: string, params: unknown[] = []): Promise<void> {
@@ -122,7 +115,7 @@ export class WebSqliteAdapter implements SqliteAdapter {
 
   /**
    * 事务：回调内所有操作要么全成功要么全回滚。
-   * Worker 侧串行处理消息，顺序有保证；共享单库连接，用 SAVEPOINT 支持嵌套。
+   * Worker 串行处理消息（oo1 exec 同步），顺序有保证；用 SAVEPOINT 支持嵌套。
    */
   async transaction<T>(fn: (tx: SqliteAdapter) => Promise<T>): Promise<T> {
     const isOuter = this.txDepth === 0;
@@ -160,34 +153,14 @@ export class WebSqliteAdapter implements SqliteAdapter {
   }
 
   async exportBytes(): Promise<Uint8Array> {
-    const { promiser, dbId } = this.requireReady();
-    const resp = await promiser<{ byteArray: Uint8Array }>('export', { dbId });
-    return resp.result.byteArray;
+    const bytes = (await this.call('export')) as Uint8Array;
+    return bytes;
   }
 
   async importBytes(bytes: Uint8Array): Promise<void> {
-    // S8 恢复用。S0 不走此路径。Worker1 API 无直接 import 消息，
-    // 这里复用 sqlite-wasm 的 OPFS 导入约定：留待 S8 依据届时选型实现。
+    // S8 恢复用：SAHPool 可用 poolUtil.importDb 覆盖库文件，需关闭并重开连接，
+    // 涉及连接生命周期管理，留待 S8（备份/恢复）依据届时选型实现。
     void bytes;
     throw new Error('importBytes 将在 S8（备份/恢复）阶段实现。');
   }
-}
-
-/**
- * 把 Worker1 promiser 抛出的错误归一化为 Error。
- * 出错时 promiser reject 的是响应信封 { type:'error', result:{ message, errorClass, ... } }，
- * 直接 String() 会得到 "[object Object]"。这里提取出真正的错误信息。
- */
-function normalizeWorkerError(e: unknown): Error {
-  if (e instanceof Error) return e;
-  if (e && typeof e === 'object') {
-    const envelope = e as { result?: { message?: string; errorClass?: string } };
-    const msg = envelope.result?.message;
-    if (typeof msg === 'string' && msg.length > 0) {
-      const err = new Error(msg);
-      if (envelope.result?.errorClass) err.name = envelope.result.errorClass;
-      return err;
-    }
-  }
-  return new Error(String(e));
 }

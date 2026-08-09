@@ -1,0 +1,22 @@
+/* ============================================================
+   自托管字体（S6 §四.3）：DM Sans（正文）+ JetBrains Mono（金额等宽）。
+   从 Google Fonts 取的 latin 变量字体子集，放 src/assets/fonts 由 Vite 处理
+   （指纹化 + 随 base 重写 URL），构建产物被 SW 预缓存，彻底断网可用
+   （不再依赖 fonts.googleapis.com / gstatic.com CDN）。
+   变量字体：单文件覆盖全字重，用 font-weight 区间声明。
+   url() 用相对路径，让 Vite 正确处理子路径 base（GitHub Pages /<repo>/）。
+   ============================================================ */
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/dm-sans.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono.woff2') format('woff2');
+}
