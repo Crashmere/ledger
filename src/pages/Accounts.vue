@@ -32,6 +32,7 @@
 //   · 只写页面层：不改 src/services/** 与 src/db/**，服务层只当消费方调用。
 // ============================================================
 import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   accountService,
   categoryService,
@@ -50,6 +51,13 @@ import {
 
 // ---------- 次级 tab ----------
 const tab = ref<'accounts' | 'tags'>('accounts');
+
+const router = useRouter();
+
+/** 点该账户明细里的流水行 → 进入编辑该笔（方案 A：复用 AddTxn 表单）。转账行同样可编辑。 */
+function openEdit(id: Id): void {
+  void router.push(`/txn/${id}/edit`);
+}
 
 // ---------- 本月区间（当前自然月，边界同 S3：timeTo = 次月1号 − 1ms） ----------
 const now = new Date();
@@ -691,7 +699,15 @@ function txnAmountClass(t: TxnWithTags): string {
                 <span class="d-date">{{ g.label }}</span>
                 <span class="d-sum">{{ daySummaryText(g) }}</span>
               </div>
-              <div v-for="t in g.items" :key="t.id" class="txn">
+              <div
+                v-for="t in g.items"
+                :key="t.id"
+                class="txn txn-clickable"
+                role="button"
+                tabindex="0"
+                @click="openEdit(t.id)"
+                @keydown.enter="openEdit(t.id)"
+              >
                 <div class="ic-tile sm" :style="{ background: txnColor(t) }">
                   <svg v-if="t.type === 'expense'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
                   <svg v-else-if="t.type === 'income'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
@@ -1124,5 +1140,22 @@ function txnAmountClass(t: TxnWithTags): string {
   .acc-list-card {
     position: static;
   }
+}
+
+/* S5：明细流水行可点击进入编辑，hover 有底色/指针反馈。 */
+.txn-clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: var(--r-md);
+  transition: background 0.12s;
+}
+.txn-clickable:hover {
+  background: var(--surface-2);
+}
+.txn-clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 </style>

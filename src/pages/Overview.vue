@@ -12,9 +12,11 @@
 //      流水里转账用中性色 .tr、不带正负号、副标题显示「转出 → 转入」。
 //   ⑤ 界面不出现「记账人/成员/TA」。
 //   本地优先：不发任何网络请求。金额一律 Cents，仅展示经 money.format。
-// 只读速览：流水条目不做点击详情/编辑（S5），账户/分类管理（S4）与深度分析（S10）均不在本阶段。
+// 只读速览升级（S5）：流水条目可点击进入编辑（/txn/:id/edit），复用记一笔表单；
+//   账户/分类管理（S4）与深度分析（S10）不在本阶段。
 // ============================================================
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   accountService,
   categoryService,
@@ -27,6 +29,13 @@ import {
   type Summary,
   type TxnWithTags,
 } from '../services';
+
+const router = useRouter();
+
+/** 点流水行 → 进入编辑该笔（方案 A：复用 AddTxn 表单）。转账行同样可编辑。 */
+function openEdit(id: Id): void {
+  void router.push(`/txn/${id}/edit`);
+}
 
 // ---------- 月份状态（默认本月） ----------
 const now = new Date();
@@ -315,7 +324,15 @@ function txnAmountClass(t: TxnWithTags): string {
               <span class="d-date">{{ g.label }}</span>
               <span class="d-sum">{{ daySummaryText(g) }}</span>
             </div>
-            <div v-for="t in g.items" :key="t.id" class="txn">
+            <div
+              v-for="t in g.items"
+              :key="t.id"
+              class="txn txn-clickable"
+              role="button"
+              tabindex="0"
+              @click="openEdit(t.id)"
+              @keydown.enter="openEdit(t.id)"
+            >
               <div class="ic-tile" :style="{ background: txnColor(t) }">
                 <!-- 收/支/转 类型图标 -->
                 <svg v-if="t.type === 'expense'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -417,5 +434,22 @@ function txnAmountClass(t: TxnWithTags): string {
   .grid.g-3 {
     grid-template-columns: 1fr;
   }
+}
+
+/* S5：流水行可点击进入编辑，hover 有底色/指针反馈（负 margin + padding 让底色铺满行内边距）。 */
+.txn-clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: var(--r-md);
+  transition: background 0.12s;
+}
+.txn-clickable:hover {
+  background: var(--surface-2);
+}
+.txn-clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 </style>

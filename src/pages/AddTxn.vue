@@ -1,17 +1,29 @@
 <script setup lang="ts">
 // ============================================================
-// AddTxn.vue —— 记一笔（S2 头号页面 · Priority 1）
+// AddTxn.vue —— 记一笔 / 编辑交易（S2 新建 + S5 编辑，双模式）
 // ============================================================
 // 布局（修订）：桌面为主战场，采用宽屏两栏卡片（上限约 860px 居中）：
 //   左栏 = 类型分段 + 大号金额显示（含算式行）+ 常驻数字键盘（操作核心）；
 //   右栏 = 表单字段区（标题 → 账户 → 分类/转入账户 → 日期 → 标签 → 备注 → 保存）。
 //   原"单屏无滚动"红线在桌面已放宽：空间充裕，不再压缩牺牲字段；窄视口退化为单列（S9 手机端再细做）。
-// 真正落库：接 S1 的 txnService.create（TxnDraft，含 title/note）。
+// 真正落库：接 S1 的 txnService.create / txnService.update / txnService.remove。
 // 仍守红线：②选账户后分类只列该账户 ③转账用"转入账户"
 //          ④算式禁用 eval（用自写安全求值器 expr.ts）⑤界面不出现"记账人/成员/TA"。
-// 智能默认：类型=支出、账户=上次使用（SettingService last_account_id）、日期=今天。
+//
+// S5 双模式（方案 A：点流水行直接进编辑，复用本表单）：
+//   · 无 route.params.id → 新建模式（S2 原行为完全不变：智能默认 / 连续记账清空 / 记住上次账户）。
+//   · 有 route.params.id → 编辑模式：onMounted 调 txnService.get(id) 回填全字段；
+//       回填顺序坑位：先按 accountId loadCategories() 再赋 categoryId（否则被"重置为首个"冲掉）；
+//       金额分→元 centsToYuan 写进 raw；日期用本地时区反推 YYYY-MM-DD；标签灌 selectedTagIds。
+//   · 保存分叉：编辑走 txnService.update(id, patch)，patch 显式传全字段——update 是合并式、
+//       tagIds 不传则保留旧关联，故 tagIds 一律传数组（含 []）；toAccountId/categoryId 显式传 null 才能清空。
+//       编辑保存/删除成功后返回来源页（router.back，兜底 push /overview），不做连续记账清空。
+//   · 删除：编辑界面内二次确认 → txnService.remove(id)（硬删，CASCADE 清 txn_tag）。
+//   · 组件复用：watch route.params.id 重跑初始化，避免编辑A→编辑B/编辑→新建残留上一笔。
+// 智能默认（仅新建）：类型=支出、账户=上次使用（SettingService last_account_id）、日期=今天。
 // ============================================================
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import {
   accountService,
   categoryService,
@@ -19,6 +31,7 @@ import {
   settingService,
   txnService,
   yuanToCents,
+  centsToYuan,
   AppError,
   type Account,
   type Category,
@@ -29,6 +42,17 @@ import {
 import { evalExpr, isExpression } from '../services/expr';
 
 const LAST_ACCOUNT_KEY = 'last_account_id';
+
+const route = useRoute();
+const router = useRouter();
+
+// ---------- 模式判定 ----------
+// route.params.id 存在 → 编辑模式；否则新建模式。用 computed 以便 watch 重新初始化。
+const editingId = computed<Id | null>(() => {
+  const p = route.params.id;
+  return typeof p === 'string' && p ? p : null;
+});
+const isEdit = computed(() => editingId.value !== null);
 
 // ---------- 数据源 ----------
 const accounts = ref<Account[]>([]);
@@ -46,9 +70,17 @@ const title = ref(''); // 标题：主要信息（如"晚饭"），选填
 const note = ref(''); // 备注：详细信息（如"和同事在楼下吃"），选填
 const raw = ref(''); // 用户在数字键盘敲入的原始算式串
 
+// 编辑模式：记住回填时的原始 time 与原始 dateStr。
+// 坑位④：若用户没动日期，保存时原样回传 originalTime，避免"改个标题把 time 冲到 00:00"。
+const originalTime = ref<number | null>(null);
+const originalDateStr = ref<string>('');
+
 // ---------- UI 状态 ----------
 const openPicker = ref<'account' | 'category' | 'toAccount' | 'date' | 'tag' | null>(null);
 const saving = ref(false);
+const deleting = ref(false);
+const confirmingDelete = ref(false); // 删除二次确认弹层
+const notFound = ref(false); // 编辑模式取不到该笔 → 友好提示后跳回概览
 const feedback = ref<{ kind: 'success' | 'error'; msg: string } | null>(null);
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -125,6 +157,27 @@ function todayStr(): string {
 function dateToEpoch(s: string): number {
   if (s === todayStr()) return Date.now();
   return new Date(`${s}T00:00:00`).getTime();
+}
+
+/** epoch ms 反推本地时区 YYYY-MM-DD（口径与 todayStr 一致），用于编辑回填日期。 */
+function epochToDateStr(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 编辑保存用的 time：
+ *   · 用户没动日期（dateStr === 回填时的原始 dateStr）→ 原样回传 originalTime，保住时分秒；
+ *   · 改了日期 → 按新日期换算（dateToEpoch，今天=此刻、其余=当天 0 点）。
+ */
+function resolveEditTime(): number {
+  if (originalTime.value !== null && dateStr.value === originalDateStr.value) {
+    return originalTime.value;
+  }
+  return dateToEpoch(dateStr.value);
 }
 
 /** 求值兜底：先去掉尾部的运算符/小数点再交给安全求值器，让"88+"这类半成品也能实时预览。 */
@@ -275,29 +328,90 @@ async function save(): Promise<void> {
 
   saving.value = true;
   try {
-    await txnService.create({
-      type: type.value,
-      amount: yuanToCents(value),
-      accountId: accountId.value,
-      toAccountId: type.value === 'transfer' ? toAccountId.value : null,
-      categoryId: type.value === 'transfer' ? null : categoryId.value,
-      time: dateToEpoch(dateStr.value),
-      title: title.value.trim() || null,
-      note: note.value.trim() || null,
-      tagIds: selectedTagIds.value.slice(),
-    });
-    // 记住上次账户，重置金额/标题/备注/标签，保留类型与账户以便连续记账。
-    await settingService.set(LAST_ACCOUNT_KEY, accountId.value);
-    raw.value = '';
-    title.value = '';
-    note.value = '';
-    selectedTagIds.value = [];
-    showFeedback('success', '已保存 ✓');
+    if (isEdit.value && editingId.value) {
+      // ---- 编辑模式：合并式 update，显式传全字段（坑位①）----
+      // toAccountId / categoryId 显式传 null 才能清空；tagIds 一律传数组（含 []）才能删光标签。
+      await txnService.update(editingId.value, {
+        type: type.value,
+        amount: yuanToCents(value),
+        accountId: accountId.value,
+        toAccountId: type.value === 'transfer' ? toAccountId.value : null,
+        categoryId: type.value === 'transfer' ? null : categoryId.value,
+        time: resolveEditTime(),
+        title: title.value.trim() || null,
+        note: note.value.trim() || null,
+        tagIds: selectedTagIds.value.slice(),
+      });
+      showFeedback('success', '已保存 ✓');
+      // 编辑不做连续记账清空；返回来源页看改动生效。
+      goBack();
+    } else {
+      // ---- 新建模式（S2 原行为，零回归）----
+      await txnService.create({
+        type: type.value,
+        amount: yuanToCents(value),
+        accountId: accountId.value,
+        toAccountId: type.value === 'transfer' ? toAccountId.value : null,
+        categoryId: type.value === 'transfer' ? null : categoryId.value,
+        time: dateToEpoch(dateStr.value),
+        title: title.value.trim() || null,
+        note: note.value.trim() || null,
+        tagIds: selectedTagIds.value.slice(),
+      });
+      // 记住上次账户，重置金额/标题/备注/标签，保留类型与账户以便连续记账。
+      await settingService.set(LAST_ACCOUNT_KEY, accountId.value);
+      raw.value = '';
+      title.value = '';
+      note.value = '';
+      selectedTagIds.value = [];
+      showFeedback('success', '已保存 ✓');
+    }
   } catch (e) {
     const msg = e instanceof AppError ? e.message : '保存失败，请重试';
     showFeedback('error', msg);
   } finally {
     saving.value = false;
+  }
+}
+
+// ============================================================
+// 删除（编辑模式，二次确认）
+// ============================================================
+function askDelete(): void {
+  confirmingDelete.value = true;
+}
+
+async function confirmDelete(): Promise<void> {
+  if (!editingId.value) return;
+  deleting.value = true;
+  try {
+    await txnService.remove(editingId.value);
+    confirmingDelete.value = false;
+    showFeedback('success', '已删除 ✓');
+    goBack();
+  } catch (e) {
+    confirmingDelete.value = false;
+    const msg =
+      e instanceof AppError && e.code === 'NOT_FOUND'
+        ? '这笔交易已不存在'
+        : e instanceof AppError
+          ? e.message
+          : '删除失败，请重试';
+    showFeedback('error', msg);
+  } finally {
+    deleting.value = false;
+  }
+}
+
+// ============================================================
+// 返回来源页（保存/删除成功后）
+// ============================================================
+function goBack(): void {
+  // 有浏览器历史则原路返回（概览来回概览、账户明细来回账户）；否则兜底去概览。
+  if (window.history.length > 1) {
+    router.back();
+  } else {
+    void router.push('/overview');
   }
 }
 
@@ -318,12 +432,28 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 // ============================================================
-// 生命周期
+// 初始化 / 生命周期
 // ============================================================
-onMounted(async () => {
-  accounts.value = await accountService.list();
-  tags.value = await tagService.list();
+/** 把表单重置回"新建模式"的干净默认（供编辑→新建切换时清残留）。 */
+function resetFormState(): void {
+  type.value = 'expense';
+  accountId.value = null;
+  toAccountId.value = null;
+  categoryId.value = null;
+  dateStr.value = todayStr();
+  selectedTagIds.value = [];
+  title.value = '';
+  note.value = '';
+  raw.value = '';
+  originalTime.value = null;
+  originalDateStr.value = '';
+  openPicker.value = null;
+  confirmingDelete.value = false;
+  notFound.value = false;
+}
 
+/** 新建模式的智能默认：类型=支出（初值即是）、账户=上次使用、日期=今天。 */
+async function initCreate(): Promise<void> {
   const last = await settingService.get(LAST_ACCOUNT_KEY);
   if (last && accounts.value.some((a) => a.id === last)) {
     accountId.value = last;
@@ -331,8 +461,64 @@ onMounted(async () => {
     accountId.value = accounts.value[0]?.id ?? null;
   }
   await loadCategories();
+}
 
+/** 编辑模式：取该笔并回填全字段（顺序坑位：先 loadCategories 再赋 categoryId）。 */
+async function initEdit(id: Id): Promise<void> {
+  const txn = await txnService.get(id);
+  if (!txn) {
+    // 不存在 → 友好提示后跳回概览，不崩溃。
+    notFound.value = true;
+    showFeedback('error', '这笔交易不存在或已被删除');
+    setTimeout(() => {
+      void router.push('/overview');
+    }, 1200);
+    return;
+  }
+
+  type.value = txn.type;
+  accountId.value = txn.accountId;
+  toAccountId.value = txn.type === 'transfer' ? txn.toAccountId : null;
+
+  // 金额：分 → 元字符串，直接作为键盘算式串（大号显示会求值展示）。坑位③别把分当元。
+  raw.value = centsToYuan(txn.amount);
+
+  // 日期：epoch ms → 本地 YYYY-MM-DD；记住原始 time/dateStr（坑位④：未改日期则原样回传）。
+  originalTime.value = txn.time;
+  originalDateStr.value = epochToDateStr(txn.time);
+  dateStr.value = originalDateStr.value;
+
+  title.value = txn.title ?? '';
+  note.value = txn.note ?? '';
+  selectedTagIds.value = txn.tags.map((t) => t.id);
+
+  // 关键顺序（坑位②）：先按 accountId 载入分类候选，再赋 categoryId，否则回填值被"重置为首个"冲掉。
+  await loadCategories();
+  categoryId.value = txn.type === 'transfer' ? null : txn.categoryId;
+}
+
+/** 统一初始化：先备好基础数据源，再按模式分叉。watch 复用同一实例时也走这里。 */
+async function initForm(): Promise<void> {
+  resetFormState();
+  accounts.value = await accountService.list();
+  tags.value = await tagService.list();
+
+  const id = editingId.value;
+  if (id) {
+    await initEdit(id);
+  } else {
+    await initCreate();
+  }
+}
+
+onMounted(async () => {
+  await initForm();
   window.addEventListener('keydown', onKeydown);
+});
+
+// 组件复用（坑位⑤）：编辑A→编辑B、或编辑→新建（route 变化但同一 AddTxn 实例）时重跑初始化。
+watch(editingId, () => {
+  void initForm();
 });
 
 onUnmounted(() => {
@@ -543,7 +729,20 @@ onUnmounted(() => {
         <div class="add-right-foot">
           <div v-if="feedback" class="feedback" :class="feedback.kind">{{ feedback.msg }}</div>
           <button class="btn btn-primary btn-lg btn-block mt-2" :disabled="!canSave || saving" @click="save">
-            {{ saving ? '保存中…' : '保存这一笔' }}
+            {{ saving ? '保存中…' : isEdit ? '保存修改' : '保存这一笔' }}
+          </button>
+          <!-- 编辑模式：删除入口（次级危险按钮，二次确认，不与保存混淆） -->
+          <button
+            v-if="isEdit"
+            class="btn btn-ghost btn-block btn-del mt-2"
+            :disabled="saving || deleting"
+            @click="askDelete"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+              <path d="M10 11v6M14 11v6" />
+            </svg>
+            删除交易
           </button>
         </div>
       </div>
@@ -551,6 +750,22 @@ onUnmounted(() => {
 
     <!-- 点击空白关闭选择器 -->
     <div v-if="openPicker" class="picker-backdrop" @click="openPicker = null" />
+
+    <!-- 删除二次确认弹层（编辑模式） -->
+    <div v-if="confirmingDelete" class="confirm-backdrop" @click.self="confirmingDelete = false">
+      <div class="confirm-card">
+        <div class="confirm-title">删除交易</div>
+        <div class="confirm-msg">
+          删除后这笔交易将不可恢复（其标签关联会一并移除，账户余额随之调整）。确定删除吗？
+        </div>
+        <div class="confirm-actions">
+          <button class="btn btn-ghost" :disabled="deleting" @click="confirmingDelete = false">取消</button>
+          <button class="btn btn-danger" :disabled="deleting" @click="confirmDelete">
+            {{ deleting ? '删除中…' : '删除' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -719,5 +934,57 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 20;
+}
+
+/* 编辑模式：删除交易——次级危险按钮，平时低调、hover 才转红，避免误点 */
+.btn-del {
+  color: var(--expense);
+  border-color: var(--border);
+}
+.btn-del:hover:not(:disabled) {
+  background: var(--expense-soft);
+  border-color: var(--expense);
+}
+.btn-del svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 删除二次确认弹层 */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.confirm-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-3);
+  padding: 22px;
+}
+.confirm-title {
+  font-size: var(--fs-h3);
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 10px;
+}
+.confirm-msg {
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 </style>
