@@ -725,6 +725,8 @@ function txnAmountClass(t: TxnWithTags): string {
                       <span v-for="tag in t.tags" :key="tag.id" class="tag-inline">{{ tag.name }}</span>
                     </template>
                   </div>
+                  <!-- S7.1：有备注时在副标题下方多显示一行（灰色小字，单行省略，悬停看全文） -->
+                  <div v-if="t.note && t.note.trim()" class="txn-note" :title="t.note">{{ t.note }}</div>
                 </div>
                 <div class="txn-amt num" :class="txnAmountClass(t)">{{ txnAmountText(t) }}</div>
               </div>
@@ -868,6 +870,18 @@ function txnAmountClass(t: TxnWithTags): string {
 </template>
 
 <style scoped>
+/* S7.1：流水行备注（层级低于 .txn-sub 的最次要一行；单行省略，悬停看全文）。
+   与 Overview.vue 的 .txn-note 保持一致：--fg-3 叠加 opacity 再淡一级，不硬编码色值。 */
+.txn-note {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  opacity: 0.75;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 次级 tab */
 .subtabs {
   display: inline-flex;
