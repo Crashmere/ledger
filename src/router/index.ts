@@ -35,7 +35,7 @@ const routes: RouteRecordRaw[] = [
     path: '/reports',
     name: 'reports',
     meta: { title: '报告' },
-    component: () => import('../pages/StubPage.vue'),
+    component: () => import('../pages/Reports.vue'),
   },
   {
     path: '/search',
