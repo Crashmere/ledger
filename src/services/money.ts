@@ -54,3 +54,13 @@ export function format(cents: Cents, opts?: { sign?: boolean; symbol?: string })
   }
   return `${signStr}${symbol}${body}`;
 }
+
+// ------------------------------------------------------------
+// MoneyUtil 对象形式导出（06-接口契约.ts §5）：
+// 仅聚合上面三个函数，不重复实现逻辑，供需要对象接口的地方注入/引用。
+// ------------------------------------------------------------
+export const MoneyUtil = {
+  yuanToCents,
+  centsToYuan,
+  format,
+} as const;

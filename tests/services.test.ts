@@ -1,0 +1,434 @@
+// ============================================================
+// services.test.ts —— S1 领域服务层单测（Vitest + Node 内存库）
+// ============================================================
+// 覆盖 S1 任务书 §五 必测用例：
+//   - yuanToCents 回归（含 9.28/35.35/0.1 等截断会错的值）
+//   - 转账双向计入余额、转账不进 summary、balance 手算核对
+//   - 删账户 RESTRICT、删分类 SET NULL、删标签 CASCADE
+//   - listByAccount 只返回本账户分类（红线）
+//   - create 校验（金额≤0 / transfer 缺 toAccountId / toAccountId==accountId / 分类不属该账户）
+// 每个用例用独立内存库（beforeEach 新建），互不污染。
+// ============================================================
+
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { BetterSqliteAdapter, makeTestAdapter } from './better-sqlite-adapter';
+import {
+  AccountServiceImpl,
+  CategoryServiceImpl,
+  SettingServiceImpl,
+  StatsServiceImpl,
+  TagServiceImpl,
+  TxnServiceImpl,
+  yuanToCents,
+} from '../src/services';
+import { AppError } from '../src/services/contract';
+
+let adapter: BetterSqliteAdapter;
+let accounts: AccountServiceImpl;
+let categories: CategoryServiceImpl;
+let tags: TagServiceImpl;
+let txns: TxnServiceImpl;
+let stats: StatsServiceImpl;
+let settings: SettingServiceImpl;
+
+beforeEach(async () => {
+  adapter = await makeTestAdapter();
+  accounts = new AccountServiceImpl(adapter);
+  categories = new CategoryServiceImpl(adapter);
+  tags = new TagServiceImpl(adapter);
+  txns = new TxnServiceImpl(adapter);
+  stats = new StatsServiceImpl(adapter);
+  settings = new SettingServiceImpl(adapter);
+});
+
+afterEach(() => {
+  adapter.close();
+});
+
+// 断言抛出指定 code 的 AppError。
+async function expectAppError(fn: () => Promise<unknown>, code: AppError['code']): Promise<void> {
+  await expect(fn()).rejects.toMatchObject({ name: 'AppError', code });
+}
+
+// ------------------------------------------------------------
+// 金额转换回归
+// ------------------------------------------------------------
+describe('money.yuanToCents 回归', () => {
+  it('含小数值不因截断出错', () => {
+    expect(yuanToCents(9.28)).toBe(928);
+    expect(yuanToCents(35.35)).toBe(3535);
+    expect(yuanToCents(0.1)).toBe(10);
+    expect(yuanToCents('7.8')).toBe(780);
+    expect(yuanToCents(0)).toBe(0);
+    expect(yuanToCents(100)).toBe(10000);
+  });
+});
+
+// ------------------------------------------------------------
+// AccountService: balance / RESTRICT
+// ------------------------------------------------------------
+describe('AccountService', () => {
+  it('balance = 初始 + 收入 − 支出 + 转入 − 转出（手算核对）', async () => {
+    const a = await accounts.create({ name: 'A', color: 1, initialBalance: 1000 });
+    const b = await accounts.create({ name: 'B', color: 2, initialBalance: 500 });
+
+    await txns.create({ type: 'income', amount: 300, accountId: a.id });
+    await txns.create({ type: 'expense', amount: 120, accountId: a.id });
+    await txns.create({ type: 'transfer', amount: 200, accountId: a.id, toAccountId: b.id });
+
+    // A: 1000 + 300 − 120 − 200(转出) = 980
+    expect(await accounts.balance(a.id)).toBe(980);
+    // B: 500 + 200(转入) = 700
+    expect(await accounts.balance(b.id)).toBe(700);
+  });
+
+  it('转账双向计入余额，二者变化互为相反数', async () => {
+    const a = await accounts.create({ name: 'A', color: 1, initialBalance: 1000 });
+    const b = await accounts.create({ name: 'B', color: 2, initialBalance: 1000 });
+
+    const beforeA = await accounts.balance(a.id);
+    const beforeB = await accounts.balance(b.id);
+
+    await txns.create({ type: 'transfer', amount: 250, accountId: a.id, toAccountId: b.id });
+
+    const afterA = await accounts.balance(a.id);
+    const afterB = await accounts.balance(b.id);
+
+    expect(afterA - beforeA).toBe(-250);
+    expect(afterB - beforeB).toBe(250);
+    expect(afterA - beforeA).toBe(-(afterB - beforeB));
+  });
+
+  it('删账户 RESTRICT：账户下有交易时抛 AppError(RESTRICT)', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await txns.create({ type: 'income', amount: 100, accountId: a.id });
+    await expectAppError(() => accounts.remove(a.id), 'RESTRICT');
+  });
+
+  it('删账户 RESTRICT：账户下有分类时也抛 AppError(RESTRICT)', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await categories.create({ accountId: a.id, name: '餐饮', color: 1 });
+    await expectAppError(() => accounts.remove(a.id), 'RESTRICT');
+  });
+
+  it('remove 不存在的账户抛 NOT_FOUND', async () => {
+    await expectAppError(() => accounts.remove('nope'), 'NOT_FOUND');
+  });
+
+  it('create 默认值：initialBalance=0, includeInBalance=true, orderNum 追加末尾', async () => {
+    const a1 = await accounts.create({ name: 'A', color: 1 });
+    const a2 = await accounts.create({ name: 'B', color: 2 });
+    expect(a1.initialBalance).toBe(0);
+    expect(a1.includeInBalance).toBe(true);
+    expect(a2.orderNum).toBeGreaterThan(a1.orderNum);
+    // 往返读回 boolean 正确
+    const got = await accounts.get(a1.id);
+    expect(got?.includeInBalance).toBe(true);
+  });
+
+  it('update includeInBalance=false 存储/读回一致', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const updated = await accounts.update(a.id, { includeInBalance: false });
+    expect(updated.includeInBalance).toBe(false);
+    expect((await accounts.get(a.id))?.includeInBalance).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------
+// CategoryService: listByAccount 红线 / SET NULL
+// ------------------------------------------------------------
+describe('CategoryService', () => {
+  it('listByAccount 只返回本账户分类（红线）', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await categories.create({ accountId: a.id, name: 'A-餐饮', color: 1 });
+    await categories.create({ accountId: a.id, name: 'A-交通', color: 1 });
+    await categories.create({ accountId: b.id, name: 'B-购物', color: 1 });
+
+    const listA = await categories.listByAccount(a.id);
+    const listB = await categories.listByAccount(b.id);
+    expect(listA).toHaveLength(2);
+    expect(listB).toHaveLength(1);
+    expect(listA.every((c) => c.accountId === a.id)).toBe(true);
+    expect(listB[0].name).toBe('B-购物');
+  });
+
+  it('create 账户不存在抛 VALIDATION', async () => {
+    await expectAppError(
+      () => categories.create({ accountId: 'ghost', name: 'x', color: 1 }),
+      'VALIDATION',
+    );
+  });
+
+  it('删分类 SET NULL：其交易仍在、categoryId 变 null', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const cat = await categories.create({ accountId: a.id, name: '餐饮', color: 1 });
+    const t = await txns.create({
+      type: 'expense',
+      amount: 100,
+      accountId: a.id,
+      categoryId: cat.id,
+    });
+
+    await categories.remove(cat.id);
+
+    const got = await txns.get(t.id);
+    expect(got).not.toBeNull();
+    expect(got?.categoryId).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------
+// TagService: CASCADE
+// ------------------------------------------------------------
+describe('TagService', () => {
+  it('删标签 CASCADE：txn_tag 关联清除、交易仍在', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const tag = await tags.create({ name: '出差', color: 1 });
+    const t = await txns.create({
+      type: 'expense',
+      amount: 100,
+      accountId: a.id,
+      tagIds: [tag.id],
+    });
+
+    // 建成时确实带上了该标签
+    const before = await txns.get(t.id);
+    expect(before?.tags.map((x) => x.id)).toContain(tag.id);
+
+    await tags.remove(tag.id);
+
+    // 交易仍在，但标签关联被级联清除
+    const after = await txns.get(t.id);
+    expect(after).not.toBeNull();
+    expect(after?.tags).toHaveLength(0);
+    // txn_tag 物理清空
+    const links = await adapter.all(`SELECT * FROM txn_tag WHERE tag_id = ?`, [tag.id]);
+    expect(links).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------
+// TxnService: create 校验
+// ------------------------------------------------------------
+describe('TxnService create 校验', () => {
+  it('金额 ≤ 0 抛 VALIDATION', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await expectAppError(
+      () => txns.create({ type: 'expense', amount: 0, accountId: a.id }),
+      'VALIDATION',
+    );
+    await expectAppError(
+      () => txns.create({ type: 'expense', amount: -50, accountId: a.id }),
+      'VALIDATION',
+    );
+  });
+
+  it('transfer 缺 toAccountId 抛 VALIDATION', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await expectAppError(
+      () => txns.create({ type: 'transfer', amount: 100, accountId: a.id }),
+      'VALIDATION',
+    );
+  });
+
+  it('transfer 的 toAccountId == accountId 抛 VALIDATION', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await expectAppError(
+      () => txns.create({ type: 'transfer', amount: 100, accountId: a.id, toAccountId: a.id }),
+      'VALIDATION',
+    );
+  });
+
+  it('分类不属该账户抛 VALIDATION', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    const catB = await categories.create({ accountId: b.id, name: 'B-购物', color: 1 });
+    await expectAppError(
+      () => txns.create({ type: 'expense', amount: 100, accountId: a.id, categoryId: catB.id }),
+      'VALIDATION',
+    );
+  });
+
+  it('非转账带 toAccountId 抛 VALIDATION', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await expectAppError(
+      () => txns.create({ type: 'income', amount: 100, accountId: a.id, toAccountId: b.id }),
+      'VALIDATION',
+    );
+  });
+
+  it('正常记一笔（分类属本账户）成功', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const cat = await categories.create({ accountId: a.id, name: '餐饮', color: 1 });
+    const t = await txns.create({
+      type: 'expense',
+      amount: 928,
+      accountId: a.id,
+      categoryId: cat.id,
+      title: '午餐',
+    });
+    expect(t.amount).toBe(928);
+    expect(t.categoryId).toBe(cat.id);
+    expect(t.toAccountId).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------
+// TxnService: tagIds 事务 / query 过滤
+// ------------------------------------------------------------
+describe('TxnService tagIds 与 query', () => {
+  it('create/update 的 tagIds 在事务内维护 txn_tag', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const t1 = await tags.create({ name: 't1', color: 1 });
+    const t2 = await tags.create({ name: 't2', color: 1 });
+    const t3 = await tags.create({ name: 't3', color: 1 });
+
+    const txn = await txns.create({
+      type: 'expense',
+      amount: 100,
+      accountId: a.id,
+      tagIds: [t1.id, t2.id],
+    });
+    expect((await txns.get(txn.id))?.tags.map((x) => x.id).sort()).toEqual(
+      [t1.id, t2.id].sort(),
+    );
+
+    // update 全量替换关联
+    await txns.update(txn.id, { tagIds: [t3.id] });
+    expect((await txns.get(txn.id))?.tags.map((x) => x.id)).toEqual([t3.id]);
+  });
+
+  it('create 带不存在的 tagId 时整体回滚（交易也不落库）', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    await expect(
+      txns.create({ type: 'expense', amount: 100, accountId: a.id, tagIds: ['ghost-tag'] }),
+    ).rejects.toBeTruthy();
+    const all = await txns.query({});
+    expect(all).toHaveLength(0);
+  });
+
+  it('query 过滤：types/keyword/amount/time/tag/account', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    const tagX = await tags.create({ name: 'x', color: 1 });
+
+    await txns.create({ type: 'income', amount: 1000, accountId: a.id, title: '工资', time: 100 });
+    await txns.create({
+      type: 'expense',
+      amount: 200,
+      accountId: a.id,
+      title: '咖啡',
+      time: 200,
+      tagIds: [tagX.id],
+    });
+    await txns.create({ type: 'expense', amount: 5000, accountId: b.id, note: '房租', time: 300 });
+    await txns.create({ type: 'transfer', amount: 300, accountId: a.id, toAccountId: b.id, time: 400 });
+
+    expect(await txns.query({ types: ['income'] })).toHaveLength(1);
+    expect(await txns.query({ keyword: '咖啡' })).toHaveLength(1);
+    expect(await txns.query({ keyword: '房租' })).toHaveLength(1);
+    expect(await txns.query({ amountMin: 1000 })).toHaveLength(2); // 1000 + 5000
+    expect(await txns.query({ amountMax: 300 })).toHaveLength(2); // 200 + 300(transfer)
+    expect(await txns.query({ timeFrom: 200, timeTo: 300 })).toHaveLength(2);
+    expect(await txns.query({ tagIds: [tagX.id] })).toHaveLength(1);
+    // account 维度：转账在转出/转入两账户都体现 → b 命中 房租 + 转账
+    expect(await txns.query({ accountIds: [b.id] })).toHaveLength(2);
+
+    // 排序
+    const asc = await txns.query({ sortBy: 'amount', sortDir: 'asc' });
+    expect(asc.map((t) => t.amount)).toEqual([200, 300, 1000, 5000]);
+    const desc = await txns.query({ sortBy: 'time', sortDir: 'desc' });
+    expect(desc.map((t) => t.time)).toEqual([400, 300, 200, 100]);
+
+    // 分页
+    const page = await txns.query({ sortBy: 'time', sortDir: 'asc', limit: 2, offset: 1 });
+    expect(page.map((t) => t.time)).toEqual([200, 300]);
+  });
+
+  it('remove 删交易，CASCADE 清 txn_tag', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const tag = await tags.create({ name: 't', color: 1 });
+    const t = await txns.create({
+      type: 'expense',
+      amount: 100,
+      accountId: a.id,
+      tagIds: [tag.id],
+    });
+    await txns.remove(t.id);
+    expect(await txns.get(t.id)).toBeNull();
+    const links = await adapter.all(`SELECT * FROM txn_tag WHERE txn_id = ?`, [t.id]);
+    expect(links).toHaveLength(0);
+    // 标签本体仍在
+    expect(await tags.list()).toHaveLength(1);
+  });
+
+  it('update 改类型为 transfer 需带合法 toAccountId', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    const t = await txns.create({ type: 'expense', amount: 100, accountId: a.id });
+    // 只改 type 不给 toAccountId → VALIDATION
+    await expectAppError(() => txns.update(t.id, { type: 'transfer' }), 'VALIDATION');
+    // 同时给合法 toAccountId → 成功
+    const updated = await txns.update(t.id, { type: 'transfer', toAccountId: b.id });
+    expect(updated.type).toBe('transfer');
+    expect(updated.toAccountId).toBe(b.id);
+  });
+});
+
+// ------------------------------------------------------------
+// StatsService: summary 转账不计入
+// ------------------------------------------------------------
+describe('StatsService.summary', () => {
+  it('转账不进 summary：仅 1 笔转账时 income/expense/net 全为 0', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await txns.create({ type: 'transfer', amount: 500, accountId: a.id, toAccountId: b.id });
+
+    const s = await stats.summary();
+    expect(s).toEqual({ income: 0, expense: 0, net: 0 });
+  });
+
+  it('summary 收支/net 正确，且转账被排除', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await txns.create({ type: 'income', amount: 1000, accountId: a.id });
+    await txns.create({ type: 'expense', amount: 300, accountId: a.id });
+    await txns.create({ type: 'transfer', amount: 9999, accountId: a.id, toAccountId: b.id });
+
+    const s = await stats.summary();
+    expect(s).toEqual({ income: 1000, expense: 300, net: 700 });
+  });
+
+  it('summary 支持 accountIds / 时间过滤', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await txns.create({ type: 'income', amount: 1000, accountId: a.id, time: 100 });
+    await txns.create({ type: 'income', amount: 500, accountId: b.id, time: 200 });
+
+    expect((await stats.summary({ accountIds: [a.id] })).income).toBe(1000);
+    expect((await stats.summary({ timeFrom: 150 })).income).toBe(500);
+  });
+});
+
+// ------------------------------------------------------------
+// SettingService
+// ------------------------------------------------------------
+describe('SettingService', () => {
+  it('set/get/all/remove 往返', async () => {
+    expect(await settings.get('theme')).toBeNull();
+    await settings.set('theme', 'dark');
+    expect(await settings.get('theme')).toBe('dark');
+    // 覆盖
+    await settings.set('theme', 'light');
+    expect(await settings.get('theme')).toBe('light');
+
+    await settings.set('lang', 'zh');
+    expect(await settings.all()).toEqual({ theme: 'light', lang: 'zh' });
+
+    await settings.remove('theme');
+    expect(await settings.get('theme')).toBeNull();
+    expect(await settings.all()).toEqual({ lang: 'zh' });
+  });
+});
