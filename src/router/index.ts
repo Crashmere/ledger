@@ -1,10 +1,10 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 
-// S2 4.2：记一笔（/add）是唯一真实现的页面，作为默认路由（打开即记账）。
-// 概览/账户/报告/搜索/设置本阶段用同一个占位组件 StubPage，属后续阶段。
+// S3：概览（/overview）是应用首页（打开即速览本月）；记一笔（/add）为真实页。
+// 账户/报告/搜索/设置本阶段仍用占位组件 StubPage，属后续阶段。
 // meta.title 供顶栏标题使用。
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: '/add' },
+  { path: '/', redirect: '/overview' },
   {
     path: '/add',
     name: 'add',
@@ -15,7 +15,7 @@ const routes: RouteRecordRaw[] = [
     path: '/overview',
     name: 'overview',
     meta: { title: '概览' },
-    component: () => import('../pages/StubPage.vue'),
+    component: () => import('../pages/Overview.vue'),
   },
   {
     path: '/accounts',

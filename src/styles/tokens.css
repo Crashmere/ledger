@@ -295,3 +295,57 @@ svg { display: block; }
 .note-inline svg { width: 18px; height: 18px; color: var(--fg-3); flex-shrink: 0; }
 /* 桌面记一笔卡片 */
 .add-card { width: 440px; margin: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xl); box-shadow: var(--sh-2); overflow: hidden; }
+
+/* ---------- 7. 概览页组件类（从 add.html 之外的 app.css 补移植） ---------- */
+/* 卡片头 */
+.card-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.card-head h3 { font-size: var(--fs-h3); font-weight: 700; }
+
+/* 月份切换（概览顶部） */
+.month-switch { display: flex; align-items: center; gap: 6px; background: var(--surface-2); border-radius: var(--r-pill); padding: 4px; }
+.month-switch button { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: var(--fg-2); }
+.month-switch button:hover { background: var(--surface-3); }
+.month-switch button:disabled { color: var(--fg-3); background: none; cursor: not-allowed; }
+.month-switch .m-label { font-weight: 700; padding: 0 8px; min-width: 96px; text-align: center; }
+
+/* 顶栏图标按钮 */
+.icon-btn { width: 38px; height: 38px; border-radius: var(--r-md); display: grid; place-items: center; color: var(--fg-2); }
+.icon-btn:hover { background: var(--surface-2); }
+
+/* 徽标（转账/收入/支出标记） */
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 700; padding: 3px 9px; border-radius: var(--r-pill); }
+.badge-income { background: var(--income-soft); color: var(--income); }
+.badge-expense { background: var(--expense-soft); color: var(--expense); }
+.badge-transfer { background: var(--transfer-soft); color: var(--transfer); }
+
+/* 交易行 */
+.txn { display: flex; align-items: center; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--border); }
+.txn:last-child { border-bottom: none; }
+.txn-main { flex: 1; min-width: 0; }
+.txn-title { font-weight: 600; font-size: var(--fs-body); }
+.txn-sub { font-size: var(--fs-xs); color: var(--fg-3); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.txn-sub .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--fg-3); }
+.txn-amt { font-weight: 700; font-size: 15px; }
+.day-head { display: flex; justify-content: space-between; align-items: baseline; padding: 14px 4px 6px; font-size: var(--fs-sm); }
+.day-head .d-date { font-weight: 700; }
+.day-head .d-sum { color: var(--fg-3); font-size: var(--fs-xs); }
+
+/* 统计小卡 */
+.stat { padding: 16px 18px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--surface); }
+.stat .s-label { font-size: var(--fs-sm); color: var(--fg-2); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.stat .s-value { font-size: 28px; font-weight: 800; margin-top: 6px; }
+.stat .s-value.small { font-size: 22px; }
+.stat .s-trend { font-size: var(--fs-xs); color: var(--fg-3); margin-top: 4px; }
+
+/* 网格布局 */
+.grid { display: grid; gap: 16px; }
+.g-2 { grid-template-columns: repeat(2, 1fr); }
+.g-3 { grid-template-columns: repeat(3, 1fr); }
+.two-col { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+
+/* section 标题 */
+.sec-title { font-size: var(--fs-h3); font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+
+/* helper */
+.mono-lg { font-family: var(--font-mono); font-weight: 700; }
+.tag-inline { font-size: var(--fs-xs); background: var(--surface-2); border-radius: var(--r-sm); padding: 2px 7px; color: var(--fg-2); font-weight: 600; }
