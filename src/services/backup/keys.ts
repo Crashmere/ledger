@@ -14,8 +14,7 @@ export const SYNC_KEYS = {
   branch: 'sync.github.branch',
   path: 'sync.github.path',
   token: 'sync.github.token',
-  lastBackupAt: 'sync.github.lastBackupAt',
-  /** 上次 L2 自动同步（拉取+合并+推送）成功时间 epoch ms。 */
+  /** 上次 L2 同步（拉取+合并+推送）成功时间 epoch ms。 */
   lastSyncAt: 'sync.github.lastSyncAt',
 } as const;
 

@@ -13,7 +13,6 @@ import { getAdapter } from '../../db/client';
 import { settingService } from '../index';
 import {
   getRemoteFile,
-  putRemoteFile,
   testConnection,
   withDefaults,
   type ConnectionResult,
@@ -95,14 +94,6 @@ export async function hasToken(): Promise<boolean> {
   return !!(t && t.trim());
 }
 
-/** 上次备份成功时间（epoch ms），无则 null。 */
-export async function getLastBackupAt(): Promise<number | null> {
-  const v = await settingService.get(SYNC_KEYS.lastBackupAt);
-  if (!v) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
 // ------------------------------------------------------------
 // 本地导出（下载文件）
 // ------------------------------------------------------------
@@ -122,31 +113,11 @@ export function localFileName(now: Date = new Date()): string {
 }
 
 // ------------------------------------------------------------
-// 备份到云端：导出 → PUT（内部自动 GET 拿 sha / 首次创建）→ 记 lastBackupAt。
-// ------------------------------------------------------------
-export interface BackupResult {
-  at: number; // 成功时间 epoch ms
-  counts: SnapshotCounts; // 本次备份的各表条数
-}
-
-export async function backupToCloud(
-  cfg: GithubConfig,
-  adapter: SqliteAdapter = getAdapter(),
-): Promise<BackupResult> {
-  const snap = await exportSnapshot(adapter);
-  const text = serializeSnapshot(snap);
-  // commit message 只含时间，绝不含 token 或其它敏感信息。
-  const message = `backup: ivy-wallet snapshot ${new Date(snap.exportedAt).toISOString()}`;
-  await putRemoteFile(cfg, text, message);
-
-  const at = Date.now();
-  await settingService.set(SYNC_KEYS.lastBackupAt, String(at));
-  return { at, counts: snapshotCounts(snap) };
-}
-
-// ------------------------------------------------------------
 // 从云端恢复：GET → 解析校验 → （UI 预览+二次确认后）→ 事务写回。
 //   拆成「取快照」与「写回」两步，让 UI 能在中间插入预览与确认。
+//   注：日常同步走 services/sync（拉取+记录级合并+乐观锁推送，无损）；
+//   这里的"整份覆盖恢复"仅供灾难恢复（本机数据损坏时从云端重建）。
+//   原先的 backupToCloud（无条件覆盖推送）已被 L2 合并同步取代并移除。
 // ------------------------------------------------------------
 export interface FetchSnapshotResult {
   ok: boolean;

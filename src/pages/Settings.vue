@@ -37,8 +37,6 @@ import {
   loadConfig,
   saveConfig,
   hasToken,
-  getLastBackupAt,
-  backupToCloud,
   fetchCloudSnapshot,
   restoreFromSnapshot,
   testGithubConnection,
@@ -47,6 +45,8 @@ import {
   type BackupSnapshot,
   type SnapshotCounts,
 } from '../services/backup';
+import { syncNow, getLastSyncAt, type SyncResult } from '../services/sync';
+import type { MergeReport } from '../services/sync/merge';
 import { planBatch, ensureLimit, type BatchPlan } from './sqlConsole';
 
 const router = useRouter();
@@ -287,7 +287,7 @@ async function loadCfgIntoForm(): Promise<void> {
     token: '', // 永不回填明文
   };
   tokenConfigured.value = await hasToken();
-  lastBackupAt.value = await getLastBackupAt();
+  lastSyncAt.value = await getLastSyncAt();
 }
 
 /** 配置是否完整到可以发请求（仓库来自内置常量，故只需 token 已存或本次已输入）。 */
@@ -349,12 +349,11 @@ async function testConn(): Promise<void> {
   }
 }
 
-// ---------- 卡片 C：备份到云端 / 从云端恢复 ----------
-const lastBackupAt = ref<number | null>(null);
-
-const backingUp = ref(false);
-const backupMsg = ref('');
-const backupError = ref('');
+// ---------- 卡片 C：云同步（无损合并）/ 灾难恢复 ----------
+// 主路径是 L2 无损同步 syncNow：拉远端 → 记录级合并（谁的都不丢）→ 落本地
+// → 带乐观锁 sha 推送。不再提供"无条件覆盖推送"（那会静默覆盖别机的新增）。
+// 「从云端覆盖恢复」仅作为逃生口保留（本机数据全毁时重建），显式二次确认。
+const lastSyncAt = ref<number | null>(null);
 
 function fmtTime(ms: number | null): string {
   if (!ms) return '从未';
@@ -363,30 +362,89 @@ function fmtTime(ms: number | null): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const lastBackupText = computed(() => fmtTime(lastBackupAt.value));
+const lastSyncText = computed(() => fmtTime(lastSyncAt.value));
 
-async function doBackup(): Promise<void> {
-  if (backingUp.value) return;
-  backupMsg.value = '';
-  backupError.value = '';
-  if (!cfgReady.value) {
-    backupError.value = '请先配置 Token。';
-    return;
-  }
-  backingUp.value = true;
-  try {
-    const cfg = await resolveConfig();
-    const res = await backupToCloud(cfg, getAdapter());
-    lastBackupAt.value = res.at;
-    backupMsg.value = `已备份到云端：账户 ${res.counts.account} · 分类 ${res.counts.category} · 交易 ${res.counts.txn}。`;
-  } catch (e) {
-    backupError.value = friendlyError(e);
-  } finally {
-    backingUp.value = false;
+const syncing = ref(false);
+const syncMsg = ref(''); // 成功文案
+const syncError = ref(''); // 失败文案
+const syncReport = ref<MergeReport | null>(null); // 合并动了什么（pushed/up-to-date 时有）
+const syncChanged = ref(false); // 本次是否改动了本地数据（需引导刷新其它页）
+
+/** 把一次同步结果翻译成面向用户的文案 + 是否改动本地。 */
+function describeSync(res: SyncResult): { msg: string; changed: boolean } {
+  switch (res.status) {
+    case 'created':
+      return { msg: '云端此前无备份，已创建首份快照。', changed: false };
+    case 'pushed': {
+      const r = res.report;
+      const pulled = r
+        ? r.account.fromRemoteOnly +
+          r.category.fromRemoteOnly +
+          r.txn.fromRemoteOnly +
+          r.tag.fromRemoteOnly
+        : 0;
+      const retryHint = res.retries ? `（化解了 ${res.retries} 次并发冲突）` : '';
+      return {
+        msg:
+          pulled > 0
+            ? `已合并并推送：吸收云端 ${pulled} 条新记录，本地改动已上传。${retryHint}`
+            : `本地改动已合并推送到云端。${retryHint}`,
+        changed: pulled > 0,
+      };
+    }
+    case 'up-to-date': {
+      const r = res.report;
+      const pulled = r
+        ? r.account.fromRemoteOnly +
+          r.category.fromRemoteOnly +
+          r.txn.fromRemoteOnly +
+          r.tag.fromRemoteOnly
+        : 0;
+      return {
+        msg: pulled > 0 ? `已从云端吸收 ${pulled} 条新记录，本地即为最新。` : '已是最新，无需同步。',
+        changed: pulled > 0,
+      };
+    }
+    default:
+      return { msg: '', changed: false };
   }
 }
 
-// 恢复：取快照 → 预览 → 二次确认 → 写回。
+async function doSync(): Promise<void> {
+  if (syncing.value) return;
+  syncMsg.value = '';
+  syncError.value = '';
+  syncReport.value = null;
+  syncChanged.value = false;
+  if (!cfgReady.value) {
+    syncError.value = '请先配置 Token。';
+    return;
+  }
+  syncing.value = true;
+  try {
+    const cfg = await resolveConfig();
+    const res = await syncNow({ adapter: getAdapter(), config: cfg });
+    if (res.status === 'error') {
+      syncError.value = res.message ?? '同步失败，请稍后重试。';
+      return;
+    }
+    if (res.status === 'skipped') {
+      syncError.value = res.message ?? '未配置同步。';
+      return;
+    }
+    const { msg, changed } = describeSync(res);
+    syncMsg.value = msg;
+    syncReport.value = res.report ?? null;
+    syncChanged.value = changed;
+    if (res.at) lastSyncAt.value = res.at;
+  } catch (e) {
+    syncError.value = friendlyError(e);
+  } finally {
+    syncing.value = false;
+  }
+}
+
+// 灾难恢复：取云端快照 → 预览 → 二次确认 → 覆盖写回本机。
 const restoreState = ref<'idle' | 'fetching' | 'confirm' | 'restoring'>('idle');
 const restoreMsg = ref('');
 const restoreError = ref('');
@@ -954,46 +1012,102 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ============ 云备份 · 备份 / 恢复 ============ -->
+      <!-- ============ 云同步 · 无损合并 ============ -->
       <div class="card">
         <div class="card-head">
-          <h3>云备份 · 备份与恢复</h3>
-          <span class="faint" style="font-size: 13px">固定单文件覆盖</span>
+          <h3>云同步 · 无损合并</h3>
+          <span class="faint" style="font-size: 13px">多设备安全同步</span>
         </div>
         <div class="card-pad" style="padding-top: 14px">
+          <div class="note-box" style="margin-bottom: 16px">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
+              <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.8 1 6.4 2.7L21 8" /><path d="M21 3v5h-5" />
+            </svg>
+            <span>
+              同步会先拉取云端、与本机<b>逐条合并（谁的都不丢）</b>，再带乐观锁推回。
+              多台设备各自新增也不会互相覆盖。App 启动时会自动同步一次，记账后也会<b>自动在后台同步</b>；
+              此处的按钮用于手动立即触发。
+            </span>
+          </div>
+
           <div class="dl" style="margin-bottom: 14px">
-            <span class="dl-k">上次备份</span>
-            <span class="dl-v num">{{ lastBackupText }}</span>
+            <span class="dl-k">上次同步</span>
+            <span class="dl-v num">{{ lastSyncText }}</span>
           </div>
 
           <div class="row gap-3 wrap">
-            <button class="btn btn-primary" :disabled="backingUp || !cfgReady" @click="doBackup">
+            <button class="btn btn-primary" :disabled="syncing || !cfgReady" @click="doSync">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 21v-12M8 13l4-4 4 4" />
-                <path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" />
+                <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.8 1 6.4 2.7L21 8" /><path d="M21 3v5h-5" />
               </svg>
-              {{ backingUp ? '备份中…' : '备份到云端' }}
-            </button>
-            <button
-              class="btn btn-ghost"
-              :disabled="restoreState === 'fetching' || restoreState === 'restoring' || !cfgReady"
-              @click="startRestore"
-            >
-              {{ restoreState === 'fetching' ? '拉取中…' : '从云端恢复' }}
+              {{ syncing ? '同步中…' : '立即同步' }}
             </button>
           </div>
 
           <div v-if="!cfgReady" class="faint mt-3" style="font-size: 12px">
-            需先在上方配置 Token，才能备份或恢复。
+            需先在上方配置 Token，才能同步。
           </div>
 
-          <div v-if="backupMsg" class="alert success mt-3">{{ backupMsg }}</div>
-          <div v-if="backupError" class="alert error mt-3">{{ backupError }}</div>
-          <div v-if="restoreMsg" class="alert success mt-3">
-            <span>{{ restoreMsg }}</span>
-            <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click="goOverview">去概览</button>
+          <div v-if="syncMsg" class="alert success mt-3">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.6" style="flex-shrink: 0">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+            <span>{{ syncMsg }}</span>
+            <button
+              v-if="syncChanged"
+              class="btn btn-ghost btn-sm"
+              style="margin-left: auto"
+              @click="reloadPage"
+            >
+              刷新页面
+            </button>
           </div>
-          <div v-if="restoreError" class="alert error mt-3">{{ restoreError }}</div>
+          <div v-if="syncError" class="alert error mt-3">{{ syncError }}</div>
+
+          <!-- 合并明细（本次同步动了什么） -->
+          <div v-if="syncReport" class="detail-lines mt-3">
+            <div class="dl">
+              <span class="dl-k">合并结果（账户 / 分类 / 交易 / 标签）</span>
+              <span class="dl-v num">
+                {{ syncReport.account.total }} / {{ syncReport.category.total }} /
+                {{ syncReport.txn.total }} / {{ syncReport.tag.total }}
+              </span>
+            </div>
+            <div class="dl">
+              <span class="dl-k">软删墓碑（已删记录）</span>
+              <span class="dl-v num">
+                {{
+                  syncReport.tombstones.account +
+                  syncReport.tombstones.category +
+                  syncReport.tombstones.txn +
+                  syncReport.tombstones.tag
+                }}
+              </span>
+            </div>
+          </div>
+
+          <!-- 灾难恢复：折叠的逃生口，明确不可撤销 -->
+          <details class="danger-fold mt-4">
+            <summary>灾难恢复：用云端快照覆盖本机</summary>
+            <div class="danger-fold-body">
+              <p class="faint" style="font-size: 12px; line-height: 1.6; margin-bottom: 10px">
+                仅在本机数据损坏 / 清空、需要从云端整份重建时使用。这会<b class="neg">丢弃本机未同步的改动</b>，
+                直接用云端快照覆盖，<b class="neg">不做合并、不可撤销</b>。日常请用上方「立即同步」。
+              </p>
+              <button
+                class="btn btn-ghost btn-sm"
+                :disabled="restoreState === 'fetching' || restoreState === 'restoring' || !cfgReady"
+                @click="startRestore"
+              >
+                {{ restoreState === 'fetching' ? '拉取中…' : '从云端覆盖恢复…' }}
+              </button>
+              <div v-if="restoreMsg" class="alert success mt-3">
+                <span>{{ restoreMsg }}</span>
+                <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click="goOverview">去概览</button>
+              </div>
+              <div v-if="restoreError" class="alert error mt-3">{{ restoreError }}</div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -1391,6 +1505,38 @@ onMounted(() => {
 }
 .field-full {
   grid-column: 1 / -1;
+}
+
+/* 灾难恢复折叠区：默认收起、低调，展开后再露出危险操作 */
+.danger-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0;
+}
+.danger-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--fg-3);
+  user-select: none;
+}
+.danger-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.danger-fold > summary::before {
+  content: '▸ ';
+  color: var(--fg-3);
+}
+.danger-fold[open] > summary::before {
+  content: '▾ ';
+}
+.danger-fold[open] > summary {
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--border);
+}
+.danger-fold-body {
+  padding: 14px;
 }
 
 /* 弹层（与 Accounts.vue 保持一致的视觉） */
