@@ -10,9 +10,16 @@
 //   底栏/FAB/放大镜三个手机元素在桌面下 display:none，故对桌面零影响。
 // ============================================================
 import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 const route = useRoute();
+const router = useRouter();
+
+// 手机端记一笔/编辑页返回：有历史则回退，否则兜底回概览（避免直达 /add 时退无可退）。
+function goBack(): void {
+  if (window.history.length > 1) router.back();
+  else void router.push('/overview');
+}
 
 // 顶栏标题：优先用路由 meta.title，兜底用"记账"。
 const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '记账');
@@ -107,6 +114,13 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
     <!-- 主区 -->
     <div class="main">
       <div class="topbar">
+        <!-- 手机端记一笔/编辑页返回键：add-mode 下底栏/FAB 收起，需在顶栏提供退出入口。
+             桌面下 + 非 add-mode 下 display:none（见 tokens.css S11 段），故零回归。 -->
+        <button v-if="isAddRoute" class="m-back-btn" aria-label="返回" @click="goBack">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
         <div class="page-title">{{ pageTitle }}</div>
         <div class="topbar-search">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">

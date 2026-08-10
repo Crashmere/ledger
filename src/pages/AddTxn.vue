@@ -74,11 +74,6 @@ const raw = ref(''); // 用户在数字键盘敲入的原始算式串
 //   · 再按数字 / 小数点 / 左括号 → 视为开始一段新输入，先清空上次结果。
 const justEvaluated = ref(false);
 
-// 编辑模式：记住回填时的原始 time 与原始 dateStr。
-// 坑位④：若用户没动日期，保存时原样回传 originalTime，避免"改个标题把 time 冲到 00:00"。
-const originalTime = ref<number | null>(null);
-const originalDateStr = ref<string>('');
-
 // ---------- UI 状态 ----------
 const openPicker = ref<'account' | 'category' | 'toAccount' | 'date' | 'tag' | null>(null);
 const saving = ref(false);
@@ -140,10 +135,12 @@ const canSave = computed(() => {
   return true;
 });
 
-const dateLabel = computed(() => {
+const isToday = computed(() => dateStr.value === todayStr());
+// 日期主体：只有「月/日」。「今天」作为前缀单独渲染（见模板 .date-today-tag），
+// 手机端窄 pill 放不下「今天 · 8/10」会溢出裁切，故手机端用 CSS 隐藏前缀、只留 8/10。
+const dateMd = computed(() => {
   const [, m, d] = dateStr.value.split('-');
-  const md = `${Number(m)}/${Number(d)}`;
-  return dateStr.value === todayStr() ? `今天 · ${md}` : md;
+  return `${Number(m)}/${Number(d)}`;
 });
 
 // ============================================================
@@ -157,10 +154,21 @@ function todayStr(): string {
   return `${y}-${m}-${d}`;
 }
 
-/** 把选中的日期字符串换成 epoch ms；当天则用当前时刻，否则用当天 0 点。 */
+/** 把选中的日期字符串换成 epoch ms：一律取该日本地时区当天 0 点（时间统一归一化到「天」）。 */
 function dateToEpoch(s: string): number {
-  if (s === todayStr()) return Date.now();
-  return new Date(`${s}T00:00:00`).getTime();
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime(); // 本地时区当天 0 点
+}
+
+/** 日期快捷加减：把 dateStr 加/减 delta 天，本地时区安全（自动跨月/跨年/闰年）。 */
+function shiftDate(delta: number): void {
+  const [y, m, d] = dateStr.value.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + delta);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  dateStr.value = `${yy}-${mm}-${dd}`;
 }
 
 /** epoch ms 反推本地时区 YYYY-MM-DD（口径与 todayStr 一致），用于编辑回填日期。 */
@@ -173,14 +181,10 @@ function epochToDateStr(ms: number): string {
 }
 
 /**
- * 编辑保存用的 time：
- *   · 用户没动日期（dateStr === 回填时的原始 dateStr）→ 原样回传 originalTime，保住时分秒；
- *   · 改了日期 → 按新日期换算（dateToEpoch，今天=此刻、其余=当天 0 点）。
+ * 编辑保存用的 time：时间已统一归一化到「天」，无论是否改过日期，
+ * 一律取「当前所选日期的本地 0 点」（不再保留原始时分秒）。
  */
 function resolveEditTime(): number {
-  if (originalTime.value !== null && dateStr.value === originalDateStr.value) {
-    return originalTime.value;
-  }
   return dateToEpoch(dateStr.value);
 }
 
@@ -490,8 +494,6 @@ function resetFormState(): void {
   note.value = '';
   raw.value = '';
   justEvaluated.value = false;
-  originalTime.value = null;
-  originalDateStr.value = '';
   openPicker.value = null;
   confirmingDelete.value = false;
   notFound.value = false;
@@ -528,10 +530,8 @@ async function initEdit(id: Id): Promise<void> {
   // 金额：分 → 元字符串，直接作为键盘算式串（大号显示会求值展示）。坑位③别把分当元。
   raw.value = centsToYuan(txn.amount);
 
-  // 日期：epoch ms → 本地 YYYY-MM-DD；记住原始 time/dateStr（坑位④：未改日期则原样回传）。
-  originalTime.value = txn.time;
-  originalDateStr.value = epochToDateStr(txn.time);
-  dateStr.value = originalDateStr.value;
+  // 日期：epoch ms → 本地 YYYY-MM-DD 回填（epochToDateStr 只取年月日，历史数据带不带时分秒都不受影响）。
+  dateStr.value = epochToDateStr(txn.time);
 
   title.value = txn.title ?? '';
   note.value = txn.note ?? '';
@@ -734,14 +734,18 @@ onUnmounted(() => {
         <!-- 日期 -->
         <div class="field">
           <label class="field-label">日期</label>
-          <div class="picker-anchor">
-            <button class="pill pill-block" :class="{ 'pill-active': openPicker === 'date' }" @click="toggle('date')">
-              {{ dateLabel }}
-              <span class="caret">▾</span>
-            </button>
-            <div v-if="openPicker === 'date'" class="popover popover-pad">
-              <input class="input" type="date" :value="dateStr" @change="onDateInput" />
+          <div class="date-row">
+            <button class="date-step" aria-label="前一天" @click="shiftDate(-1)">‹</button>
+            <div class="picker-anchor date-anchor">
+              <button class="pill pill-block" :class="{ 'pill-active': openPicker === 'date' }" @click="toggle('date')">
+                <span v-if="isToday" class="date-today-tag">今天 · </span>{{ dateMd }}
+                <span class="caret">▾</span>
+              </button>
+              <div v-if="openPicker === 'date'" class="popover popover-pad">
+                <input class="input" type="date" :value="dateStr" @change="onDateInput" />
+              </div>
             </div>
+            <button class="date-step" aria-label="后一天" @click="shiftDate(1)">›</button>
           </div>
         </div>
 
@@ -948,6 +952,21 @@ onUnmounted(() => {
     min-width: 0;
   }
 
+  /* 日期三件套在手机端每个 .field 仅占半宽：加减按钮收窄、行内间距收紧，
+     确保「‹ pill ›」整行不换行、不撑破外层 flex:1（守单屏无滚动红线）。 */
+  .date-row {
+    gap: 4px;
+  }
+  .date-step {
+    width: 30px;
+    font-size: 18px;
+  }
+  /* 手机端窄 pill 放不下「今天 · 8/10」（会溢出裁切），隐藏「今天」前缀只留月/日。
+     桌面 pill 够宽，仍显示完整「今天 · 8/10」。 */
+  .date-today-tag {
+    display: none;
+  }
+
   /* 数字键盘：吃满所有剩余高度、常驻不滚动；行高由 minmax(0,1fr) 弹性分配。
      必须用 minmax(0,1fr) 而非 1fr——后者等价 minmax(auto,1fr)，行高不肯低于内容，
      在编辑模式（多出"删除交易"按钮）会撑高网格、第 4 行被 overflow 裁掉（坑3）。
@@ -969,6 +988,39 @@ onUnmounted(() => {
   /* 保存区贴底：numpad flex:1 已把它顶到底部，这里清掉桌面的 margin-top:auto 以免二次抢占 */
   .add-right-foot {
     margin-top: 0;
+  }
+}
+
+/* ============================================================
+   矮屏压缩（如 iPhone SE：宽≤720 且 高≤740）。
+   问题：默认手机布局的固定块（分段 + 46px 金额 + 标题 + 两行 pill + 备注 + 保存 + gap）
+   在矮屏上几乎占满可用高度，数字键盘 flex:1 被挤到只剩几十 px、按钮行高约 7px 不可用。
+   对策：仅在矮屏收紧金额字号 / 字段间距 / 卡片 gap，把高度让给键盘，
+        使 numpad 恢复到 ~160px（按钮行高 ~36px），且整屏仍不滚动（头号红线）。
+   正常高度手机（812px+）不触发本段，保持原有舒适字号。 */
+@media (max-width: 720px) and (max-height: 740px) {
+  .add-card-2col {
+    gap: 5px;
+    padding-top: 6px;
+  }
+  /* 金额区：压到 30px、去留白（矮屏省 ~50px）。
+     注意：桌面 .amount-lg / .amount-lg .val 定义在本文件更靠后（同特异性会反压 media 规则），
+     故这里用 .add-card-2col 前缀提高特异性，确保矮屏压缩真正生效（同坑见 numpad 注释）。 */
+  .add-card-2col .amount-lg {
+    padding: 0;
+  }
+  .add-card-2col .amount-lg .val {
+    font-size: 30px;
+  }
+  /* 字段：label 收小、块内间距收紧、输入框上下 padding 收窄 */
+  .add-right .field {
+    gap: 2px;
+  }
+  .add-card-2col .field-label {
+    font-size: 11px;
+  }
+  .add-card-2col .input {
+    padding: 7px 10px;
   }
 }
 
@@ -1015,6 +1067,41 @@ onUnmounted(() => {
 .dot {
   width: 20px;
   height: 20px;
+}
+
+/* 日期三件套：‹ 前一天 | 日期 pill | 后一天 ›。
+   加减按钮定宽方块（flex:none）、中间 pill 容器 flex:1 吃满剩余，
+   整行不换行、不增高——守 AddTxn 单屏无滚动红线。 */
+.date-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.date-anchor {
+  flex: 1;
+  min-width: 0;
+}
+.date-step {
+  flex: none;
+  width: 40px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.date-step:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.date-step:active {
+  background: var(--surface-3);
 }
 
 /* 弹出选择层 */

@@ -445,6 +445,12 @@ function txnAmountClass(t: TxnWithTags): string {
   .ov-two-col {
     grid-template-columns: 1fr;
   }
+  /* 单列后 grid 列默认 minmax(auto,1fr)，auto 最小值=子项 max-content 宽，
+     会被卡片内不换行的金额/长行撑破视口 → 横向滚动。给两列子项补 min-width:0，
+     让列可收缩到容器宽度。（桌面双栏用固定 360px 列，不受影响。） */
+  .ov-two-col > * {
+    min-width: 0;
+  }
   .grid.g-3 {
     grid-template-columns: 1fr;
   }

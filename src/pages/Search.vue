@@ -308,12 +308,10 @@ function typeBadgeClass(t: TxnType): string {
   return t === 'income' ? 'badge-income' : t === 'expense' ? 'badge-expense' : 'badge-transfer';
 }
 
-/** 详情：完整日期时间「2026年8月8日 · 今天 19:42」。 */
+/** 详情：完整日期「2026年8月8日 · 今天」（时间统一到「天」，不显示时分）。 */
 function fullDateTimeText(t: TxnWithTags): string {
   const d = new Date(t.time);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${d.getFullYear()}年${dayLabel(d)} ${hh}:${mm}`;
+  return `${d.getFullYear()}年${dayLabel(d)}`;
 }
 /** 详情：ISO 短日期「2026-08-08」。 */
 function isoDate(t: TxnWithTags): string {

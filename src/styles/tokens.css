@@ -362,8 +362,8 @@ svg { display: block; }
    —— 手机专属元素（.m-tabbar / .m-fab / .m-search-btn）在桌面下 display:none。
    ============================================================ */
 
-/* 默认（桌面）：三个手机专属元素隐藏，确保桌面零回归。 */
-.m-tabbar, .m-fab, .m-search-btn { display: none; }
+/* 默认（桌面）：手机专属元素隐藏，确保桌面零回归。 */
+.m-tabbar, .m-fab, .m-search-btn, .m-back-btn { display: none; }
 
 @media (max-width: 720px) {
   /* --- 布局翻转：外壳竖排，侧栏收起，主区铺满 --- */
@@ -387,6 +387,15 @@ svg { display: block; }
   .m-search-btn:hover { background: var(--surface-2); }
   /* 当前在搜索页时高亮放大镜（复用 router-link-active） */
   .m-search-btn.router-link-active { color: var(--primary); background: var(--primary-soft); }
+
+  /* 手机端记一笔/编辑页返回键（仅 v-if=isAddRoute 时渲染）：顶栏最左侧，负外边距贴齐 padding。 */
+  .m-back-btn {
+    display: grid; place-items: center;
+    width: 40px; height: 40px; border-radius: var(--r-md);
+    margin-left: -8px; border: none; background: none;
+    color: var(--fg); flex-shrink: 0; cursor: pointer;
+  }
+  .m-back-btn:hover { background: var(--surface-2); }
 
   /* --- 主内容区：底部留白，避免被固定底栏 + FAB 遮挡（坑2） --- */
   .content {
