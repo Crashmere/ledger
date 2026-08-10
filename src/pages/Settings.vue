@@ -47,6 +47,7 @@ import {
   type BackupSnapshot,
   type SnapshotCounts,
 } from '../services/backup';
+import { planBatch, ensureLimit, type BatchPlan } from './sqlConsole';
 
 const router = useRouter();
 
@@ -444,10 +445,254 @@ async function confirmRestore(): Promise<void> {
   }
 }
 
+// ============================================================
+// SQL 控制台（S12）：对本地 SQLite 库执行任意 SQL。
+//   - 只读（SELECT/WITH/PRAGMA/EXPLAIN）直接执行、渲染表格；
+//   - 含写语句 → 分级二次确认（高危需手输确认词）+ 一键备份联动 → 事务执行。
+// 读写判定只靠前端解析首关键词（见 ./sqlConsole），从严：识别不出的当写。
+// 所有结果 / 错误一律 {{ }} 文本绑定，绝不 v-html（库里可能存有 XSS 载荷）。
+// ============================================================
+
+/** SQL 编辑框内容。 */
+const sqlText = ref('');
+/** 执行中（防重复点击 / 并发写）。 */
+const sqlRunning = ref(false);
+/** 执行报错文本（SQLite 原文，纯文本渲染）。 */
+const sqlError = ref('');
+
+/** 查询结果：表头（列名，键序即列序）+ 数据行。 */
+const sqlColumns = ref<string[]>([]);
+const sqlRows = ref<Record<string, unknown>[]>([]);
+/** 是否有结果集（区分「查询」与「写操作」两种成功态）。 */
+const sqlHasResult = ref(false);
+/** 结果区提示文本（如「仅显示前 500 行」「查询成功，0 行」）。 */
+const sqlNotice = ref('');
+/** 写操作成功后展示「数据已变更，需刷新」提示。 */
+const sqlWriteDone = ref(false);
+
+/** 待确认执行的批次（含写语句时进入确认窗）。 */
+const sqlPlan = ref<BatchPlan | null>(null);
+/** 高危批次需手输的确认词。 */
+const sqlConfirmWord = ref('');
+const CONFIRM_WORD = 'EXECUTE';
+/** 确认窗内「先导出备份」的状态与提示。 */
+const sqlBackupExporting = ref(false);
+const sqlBackupMsg = ref('');
+
+/** 6 张表名（表结构速查用）。 */
+const SQL_TABLES = ['account', 'category', 'txn', 'tag', 'txn_tag', 'setting'] as const;
+/** 当前展开查看字段的表名（null = 未展开）。 */
+const sqlOpenTable = ref<string | null>(null);
+/** 已展开表的字段名列表（动态 PRAGMA 取，与真库一致）。 */
+const sqlTableCols = ref<string[]>([]);
+
+/** 常用只读模板（点击填入编辑框、不自动执行）。金额单位是「分」。 */
+const SQL_TEMPLATES: { label: string; sql: string }[] = [
+  {
+    label: '各账户余额',
+    sql: `SELECT a.name,
+       a.initial_balance
+         + COALESCE(SUM(CASE WHEN t.type='income'   AND t.account_id=a.id THEN t.amount END),0)
+         - COALESCE(SUM(CASE WHEN t.type='expense'  AND t.account_id=a.id THEN t.amount END),0)
+         - COALESCE(SUM(CASE WHEN t.type='transfer' AND t.account_id=a.id THEN t.amount END),0)
+         + COALESCE(SUM(CASE WHEN t.type='transfer' AND t.to_account_id=a.id THEN t.amount END),0)
+         AS balance_cents
+FROM account a LEFT JOIN txn t ON (t.account_id=a.id OR t.to_account_id=a.id)
+GROUP BY a.id ORDER BY a.order_num;`,
+  },
+  {
+    label: '最近 50 笔交易',
+    sql: `SELECT id,type,amount,account_id,category_id,time,title,note FROM txn ORDER BY time DESC LIMIT 50;`,
+  },
+  {
+    label: '孤儿检查（无分类收支）',
+    sql: `SELECT id,type,amount,time,title FROM txn WHERE category_id IS NULL AND type IN ('income','expense');`,
+  },
+  {
+    label: '各表行数',
+    sql: `SELECT 'account' AS tbl, COUNT(*) AS n FROM account UNION ALL SELECT 'txn', COUNT(*) FROM txn UNION ALL SELECT 'category', COUNT(*) FROM category UNION ALL SELECT 'tag', COUNT(*) FROM tag;`,
+  },
+];
+
+/** 把模板 / 表名填入编辑框（不自动执行）。 */
+function fillSql(text: string): void {
+  sqlText.value = text;
+}
+
+/** 展开 / 收起某表的字段速查（动态 PRAGMA table_info）。 */
+async function toggleTable(name: string): Promise<void> {
+  if (sqlOpenTable.value === name) {
+    sqlOpenTable.value = null;
+    sqlTableCols.value = [];
+    return;
+  }
+  sqlOpenTable.value = name;
+  sqlTableCols.value = [];
+  try {
+    // 表名来自内部白名单常量，非用户输入，直接内联安全。
+    const rows = await getAdapter().all<{ name: string }>(`PRAGMA table_info('${name}')`);
+    sqlTableCols.value = rows.map((r) => String(r.name));
+  } catch (e) {
+    sqlTableCols.value = [];
+    sqlError.value = friendlyError(e);
+  }
+}
+
+/** 清空上一次的结果 / 错误 / 提示。 */
+function resetSqlOutput(): void {
+  sqlError.value = '';
+  sqlColumns.value = [];
+  sqlRows.value = [];
+  sqlHasResult.value = false;
+  sqlNotice.value = '';
+  sqlWriteDone.value = false;
+}
+
+/** 把一组结果行落到展示态（列序 = 第一行键序）。 */
+function showRows(rows: Record<string, unknown>[]): void {
+  sqlHasResult.value = true;
+  sqlRows.value = rows;
+  sqlColumns.value = rows.length > 0 ? Object.keys(rows[0]) : [];
+}
+
+/** 点「执行」：判定读写；全只读直接跑，含写则弹确认窗。 */
+async function onRunSql(): Promise<void> {
+  if (sqlRunning.value) return;
+  resetSqlOutput();
+  const plan = planBatch(sqlText.value);
+  if (plan.statements.length === 0) {
+    sqlError.value = '请输入至少一条 SQL 语句。';
+    return;
+  }
+  if (plan.hasWrite) {
+    // 含写语句：进入分级确认窗（不在此执行）。
+    sqlPlan.value = plan;
+    sqlConfirmWord.value = '';
+    sqlBackupMsg.value = '';
+    return;
+  }
+  await runReadBatch(plan);
+}
+
+/** 执行全只读批次：逐条跑，渲染最后一条结果。 */
+async function runReadBatch(plan: BatchPlan): Promise<void> {
+  sqlRunning.value = true;
+  try {
+    const adapter = getAdapter();
+    let lastRows: Record<string, unknown>[] = [];
+    let limited = false;
+    for (const st of plan.statements) {
+      const { sql, added } = ensureLimit(st.sql);
+      lastRows = await adapter.all(sql);
+      limited = added;
+    }
+    showRows(lastRows);
+    if (lastRows.length === 0) {
+      sqlNotice.value = '查询成功，0 行。';
+    } else if (limited) {
+      sqlNotice.value = '仅显示前 500 行（未指定 LIMIT）。';
+    }
+  } catch (e) {
+    resetSqlOutput();
+    sqlError.value = friendlyError(e);
+  } finally {
+    sqlRunning.value = false;
+  }
+}
+
+/** 关闭确认窗（取消执行）。 */
+function cancelSqlConfirm(): void {
+  if (sqlRunning.value) return;
+  sqlPlan.value = null;
+  sqlConfirmWord.value = '';
+  sqlBackupMsg.value = '';
+  sqlError.value = '';
+}
+
+/** 确认窗内「先导出备份再执行」：下载 JSON 快照，但不自动执行 SQL。 */
+async function exportBeforeRun(): Promise<void> {
+  if (sqlBackupExporting.value) return;
+  sqlBackupExporting.value = true;
+  sqlBackupMsg.value = '';
+  try {
+    const text = await buildSnapshotText(getAdapter());
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = localFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    sqlBackupMsg.value = '已导出备份 ✓';
+  } catch (e) {
+    sqlBackupMsg.value = `备份导出失败：${friendlyError(e)}`;
+  } finally {
+    sqlBackupExporting.value = false;
+  }
+}
+
+/** 高危批次是否已满足执行条件（手输确认词精确匹配）。 */
+const sqlDangerReady = computed(
+  () => !sqlPlan.value?.hasDanger || sqlConfirmWord.value === CONFIRM_WORD,
+);
+
+/** 确认执行写批次：整批包一个事务，任一失败整体回滚。 */
+async function confirmRunSql(): Promise<void> {
+  const plan = sqlPlan.value;
+  if (!plan || sqlRunning.value) return;
+  if (plan.hasDanger && sqlConfirmWord.value !== CONFIRM_WORD) return;
+  sqlRunning.value = true;
+  sqlError.value = '';
+  try {
+    const adapter = getAdapter();
+    let lastRead: Record<string, unknown>[] | null = null;
+    await adapter.transaction(async (tx) => {
+      for (const st of plan.statements) {
+        if (st.kind === 'read') {
+          lastRead = await tx.all(st.sql);
+        } else {
+          await tx.run(st.sql);
+        }
+      }
+    });
+    // 事务成功：关闭确认窗，展示成功态。
+    sqlPlan.value = null;
+    sqlConfirmWord.value = '';
+    sqlBackupMsg.value = '';
+    resetSqlOutput();
+    if (lastRead) {
+      showRows(lastRead);
+    }
+    sqlWriteDone.value = true;
+  } catch (e) {
+    // 失败：停在确认窗，展示错误（整批已回滚）。
+    sqlError.value = `执行失败，已回滚，未写入任何数据：${friendlyError(e)}`;
+  } finally {
+    sqlRunning.value = false;
+  }
+}
+
+/** 写操作后引导刷新（其它页数据各自查询、不会自动感知变更）。 */
+function reloadPage(): void {
+  location.reload();
+}
+
+/** 单元格值渲染：null / undefined 用灰色 NULL 标识（模板据此判断）。 */
+function isNullCell(v: unknown): boolean {
+  return v === null || v === undefined;
+}
+
+/** 单元格文本（非 null）：一律转成字符串，交由 {{ }} 文本绑定转义。 */
+function cellText(v: unknown): string {
+  if (typeof v === 'string') return v;
+  return String(v);
+}
+
 onMounted(() => {
   void loadCfgIntoForm();
-});
-</script>
+});</script>
 
 <template>
   <div class="content">
@@ -766,6 +1011,179 @@ onMounted(() => {
           <div v-if="restoreError" class="alert error mt-3">{{ restoreError }}</div>
         </div>
       </div>
+
+      <!-- ============ 数据 · SQL 控制台（S12） ============ -->
+      <div class="card">
+        <div class="card-head">
+          <h3>数据 · SQL 控制台</h3>
+          <span class="faint" style="font-size: 13px">直连本地数据库</span>
+        </div>
+        <div class="card-pad" style="padding-top: 14px">
+          <!-- 说明条 -->
+          <div class="note-box" style="margin-bottom: 14px">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
+              <path d="M12 9v4M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            </svg>
+            <span>
+              直接对本地数据库执行 SQL。只读查询直接运行；<b>写操作不可撤销，请谨慎操作</b>，
+              执行前会二次确认并可一键导出备份。金额单位为「分」，此处原样显示、不做换算。
+            </span>
+          </div>
+
+          <!-- 表结构速查 -->
+          <div class="sec-title" style="font-size: 12px; color: var(--fg-3); margin-bottom: 8px">表结构速查</div>
+          <div class="chip-row">
+            <button
+              v-for="t in SQL_TABLES"
+              :key="t"
+              class="chip"
+              :class="{ active: sqlOpenTable === t }"
+              @click="toggleTable(t)"
+            >
+              {{ t }}
+            </button>
+          </div>
+          <div v-if="sqlOpenTable" class="cols-box">
+            <span class="cols-head">{{ sqlOpenTable }} 字段：</span>
+            <button
+              v-for="c in sqlTableCols"
+              :key="c"
+              class="col-chip"
+              @click="fillSql(sqlText + c)"
+            >
+              {{ c }}
+            </button>
+            <span v-if="sqlTableCols.length === 0" class="faint" style="font-size: 12px">（无字段或读取失败）</span>
+          </div>
+
+          <!-- 常用模板 -->
+          <div class="sec-title" style="font-size: 12px; color: var(--fg-3); margin: 14px 0 8px">常用查询模板（点击填入编辑框）</div>
+          <div class="chip-row">
+            <button
+              v-for="tpl in SQL_TEMPLATES"
+              :key="tpl.label"
+              class="chip"
+              @click="fillSql(tpl.sql)"
+            >
+              {{ tpl.label }}
+            </button>
+          </div>
+
+          <!-- SQL 编辑框 -->
+          <textarea
+            v-model="sqlText"
+            class="sql-input mt-3"
+            rows="6"
+            spellcheck="false"
+            placeholder="例如：SELECT * FROM account"
+          />
+
+          <!-- 执行按钮 -->
+          <div class="row gap-3 mt-3">
+            <button class="btn btn-primary" :disabled="sqlRunning || !sqlText.trim()" @click="onRunSql">
+              {{ sqlRunning ? '执行中…' : '执行' }}
+            </button>
+            <span class="faint" style="font-size: 12px; align-self: center">
+              只读语句直接执行；写操作需二次确认。
+            </span>
+          </div>
+
+          <!-- 结果区 -->
+          <div v-if="sqlError" class="alert error mt-3">{{ sqlError }}</div>
+
+          <div v-if="sqlWriteDone" class="alert success mt-3">
+            <span>执行成功。数据已变更，其它页面需刷新后生效。</span>
+            <button class="btn btn-ghost btn-sm" style="margin-left: auto" @click="reloadPage">刷新页面</button>
+          </div>
+
+          <template v-if="sqlHasResult">
+            <div v-if="sqlNotice" class="faint mt-3" style="font-size: 12px">{{ sqlNotice }}</div>
+            <div v-if="sqlColumns.length" class="table-scroll mt-3">
+              <table class="sql-table">
+                <thead>
+                  <tr>
+                    <th v-for="col in sqlColumns" :key="col">{{ col }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(r, i) in sqlRows" :key="i">
+                    <td v-for="col in sqlColumns" :key="col">
+                      <span v-if="isNullCell(r[col])" class="cell-null">NULL</span>
+                      <template v-else>{{ cellText(r[col]) }}</template>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SQL 写操作 · 分级确认弹层 ==================== -->
+    <div
+      v-if="sqlPlan"
+      class="modal-backdrop"
+      @click.self="cancelSqlConfirm"
+    >
+      <div class="modal modal-sm">
+        <div class="modal-head"><h3>确认执行 SQL？</h3></div>
+        <div class="modal-body">
+          <div v-if="sqlPlan.hasDanger" class="alert error" style="margin-bottom: 12px">
+            ⚠️ 本批含高危操作。<b class="neg">此操作不可撤销，建议先导出备份</b>。
+          </div>
+          <p v-else style="color: var(--fg-2); font-size: 14px; line-height: 1.6">
+            将执行以下写操作。<b class="neg">此操作不可撤销，建议先导出备份</b>。
+          </p>
+
+          <!-- 语句清单 -->
+          <div class="stmt-list mt-3">
+            <div v-for="(st, i) in sqlPlan.statements" :key="i" class="stmt-item">
+              <div class="stmt-tags">
+                <span class="tag-kind" :class="st.kind">{{ st.kind === 'read' ? '读' : '写' }}</span>
+                <span v-if="st.danger" class="tag-danger">⚠️ 高危</span>
+              </div>
+              <code class="stmt-sql">{{ st.sql }}</code>
+              <div v-if="st.reason" class="stmt-reason">{{ st.reason }}</div>
+            </div>
+          </div>
+
+          <!-- 一键备份联动 -->
+          <div class="row gap-3 mt-3 wrap">
+            <button class="btn btn-ghost btn-sm" :disabled="sqlBackupExporting" @click="exportBeforeRun">
+              {{ sqlBackupExporting ? '导出中…' : '先导出备份再执行' }}
+            </button>
+            <span v-if="sqlBackupMsg" class="faint" style="font-size: 12px; align-self: center">{{ sqlBackupMsg }}</span>
+          </div>
+
+          <!-- 高危：手输确认词 -->
+          <div v-if="sqlPlan.hasDanger" class="field mt-3">
+            <label class="field-label">
+              高危操作，请手动输入确认词 <b class="num">{{ CONFIRM_WORD }}</b> 后才能执行
+            </label>
+            <input
+              v-model="sqlConfirmWord"
+              class="input"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="CONFIRM_WORD"
+            />
+          </div>
+
+          <div v-if="sqlError" class="alert error mt-3">{{ sqlError }}</div>
+        </div>
+        <div class="modal-foot">
+          <span style="flex: 1" />
+          <button class="btn btn-ghost" :disabled="sqlRunning" @click="cancelSqlConfirm">取消</button>
+          <button
+            class="btn btn-danger"
+            :disabled="sqlRunning || !sqlDangerReady"
+            @click="confirmRunSql"
+          >
+            {{ sqlRunning ? '执行中…' : '确认执行' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- ==================== 从云端恢复 · 二次确认弹层 ==================== -->
@@ -1031,6 +1449,184 @@ onMounted(() => {
   gap: 10px;
   padding: 14px 20px;
   border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+   SQL 控制台（S12）
+   ============================================================ */
+/* chips 行（表结构速查 / 模板） */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background 0.12s;
+}
+.chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.chip.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+/* 字段速查框 */
+.cols-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.cols-head {
+  font-size: 12px;
+  color: var(--fg-3);
+  margin-right: 4px;
+}
+.col-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.col-chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* SQL 编辑框 */
+.sql-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--fg);
+  resize: vertical;
+  min-height: 120px;
+}
+.sql-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* 结果表格：横向可滚动，不撑破布局 */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  -webkit-overflow-scrolling: touch;
+}
+.sql-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 12px;
+}
+.sql-table th,
+.sql-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  color: var(--fg-2);
+  vertical-align: top;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sql-table th {
+  background: var(--surface-2);
+  color: var(--fg);
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+}
+.sql-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.cell-null {
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+/* 确认窗内语句清单 */
+.stmt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.stmt-item {
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+}
+.stmt-tags {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.tag-kind {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.tag-kind.read {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.tag-kind.write {
+  background: var(--expense-soft);
+  color: var(--expense);
+}
+.tag-danger {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--expense-soft);
+  color: var(--expense);
+}
+.stmt-sql {
+  display: block;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.stmt-reason {
+  font-size: 11px;
+  color: var(--expense);
+  margin-top: 4px;
 }
 
 @media (max-width: 900px) {
