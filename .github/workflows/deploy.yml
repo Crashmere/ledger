@@ -1,0 +1,64 @@
+# GitHub Pages 部署（S13）
+# 触发：push 到 main。构建 Vite 产物并发布到 Pages。
+# 部署地址：https://<owner>.github.io/<repo>/
+#   —— 项目页在子路径下，故构建时设 DEPLOY_BASE=/<repo>/（vite.config.ts 读它作 base）。
+#      base 由仓库名自动推导（github.event.repository.name），改名/迁移仓库无需改本文件。
+# 说明：SAHPool VFS 不依赖 SharedArrayBuffer，纯静态托管无需 COOP/COEP 头。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 允许在 Actions 页手动触发
+
+# Pages 部署所需权限（最小集）
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一个部署；新 push 取消排队中的旧构建，但不打断进行中的部署。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build (含类型检查)
+        # DEPLOY_BASE 取仓库名，形如 /ivy-wallet/，喂给 vite.config.ts 的 base。
+        run: DEPLOY_BASE="/${{ github.event.repository.name }}/" npm run build
+
+      - name: SPA 深链兜底（404.html = index.html）
+        # GitHub Pages 无服务端重写，直接访问 /reports 等深链会 404；
+        # 复制一份 404.html，Pages 用它兜底未知路径、交回 SPA 客户端路由。
+        run: cp dist/index.html dist/404.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

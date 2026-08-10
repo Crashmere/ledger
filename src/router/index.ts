@@ -53,6 +53,9 @@ const routes: RouteRecordRaw[] = [
 ];
 
 export const router = createRouter({
-  history: createWebHistory(),
+  // base 跟随 Vite 的 BASE_URL：本地/根路径部署为 '/'，
+  // GitHub Pages 项目页（DEPLOY_BASE=/ivy-wallet/）下为 '/ivy-wallet/'，
+  // 否则子路径下路由匹配错乱、返回键/深链失效。
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 });
