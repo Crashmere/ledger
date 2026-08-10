@@ -69,6 +69,10 @@ const selectedTagIds = ref<Id[]>([]);
 const title = ref(''); // 标题：主要信息（如"晚饭"），选填
 const note = ref(''); // 备注：详细信息（如"和同事在楼下吃"），选填
 const raw = ref(''); // 用户在数字键盘敲入的原始算式串
+// 刚按过 = 求值：此时 raw 已被折叠成结果值。约定（计算器惯例）：
+//   · 再按运算符 → 在结果上继续（保留 raw，仅清标记）；
+//   · 再按数字 / 小数点 / 左括号 → 视为开始一段新输入，先清空上次结果。
+const justEvaluated = ref(false);
 
 // 编辑模式：记住回填时的原始 time 与原始 dateStr。
 // 坑位④：若用户没动日期，保存时原样回传 originalTime，避免"改个标题把 time 冲到 00:00"。
@@ -207,12 +211,17 @@ function argbToCss(argb: number): string {
 // 数字键盘输入
 // ============================================================
 function press(ch: string): void {
+  // 刚按过 = 得到结果：再输入数字/小数点视为「开始一段新算式」，先清掉上次结果。
+  if (justEvaluated.value) {
+    raw.value = '';
+    justEvaluated.value = false;
+  }
   if (ch === '.') {
-    // 当前操作数已有小数点则忽略，避免 "1.2.3"
-    const lastNum = raw.value.split(/[+\-*/]/).pop() ?? '';
+    // 当前操作数已有小数点则忽略，避免 "1.2.3"（按运算符/括号切分取最后一段操作数）
+    const lastNum = raw.value.split(/[+\-*/()]/).pop() ?? '';
     if (lastNum.includes('.')) return;
-    if (raw.value === '' || /[+\-*/]$/.test(raw.value)) {
-      raw.value += '0.'; // 补前导 0
+    if (raw.value === '' || /[+\-*/(]$/.test(raw.value)) {
+      raw.value += '0.'; // 空串或运算符/左括号后补前导 0
       return;
     }
   }
@@ -220,6 +229,8 @@ function press(ch: string): void {
 }
 
 function pressOp(op: '+' | '-' | '*' | '/'): void {
+  // 关键交互：刚出结果时按运算符 → 保留结果、在其上继续（仅清标记，不清 raw）。
+  justEvaluated.value = false;
   if (raw.value === '') return; // 不允许以运算符开头
   if (/[+\-*/]$/.test(raw.value)) {
     // 末尾已是运算符：替换之
@@ -229,8 +240,36 @@ function pressOp(op: '+' | '-' | '*' | '/'): void {
   raw.value += op;
 }
 
+/** 括号输入：evalExpr 本就支持括号，这里只负责把符号拼进 raw。 */
+function pressParen(p: '(' | ')'): void {
+  if (justEvaluated.value) {
+    if (p === '(') raw.value = ''; // 结果后按左括号 = 开新算式
+    justEvaluated.value = false;
+  }
+  raw.value += p;
+}
+
 function backspace(): void {
+  justEvaluated.value = false;
   raw.value = raw.value.slice(0, -1);
+}
+
+/**
+ * 等于号：求出当前算式结果并「折叠」回 raw，作为后续继续运算的基数。
+ * 用 formatNum 折叠——与大号显示区实时求值口径完全一致（金额两位精度），
+ * 避免出现 "10/3=3.33333333" 这类与显示/落库不符的长尾。空/非法时不动。
+ */
+function equals(): void {
+  const v = amountValue.value;
+  if (v === null) return;
+  raw.value = formatNum(v);
+  justEvaluated.value = true;
+}
+
+/** 清空：把算式清干净，回到 0。 */
+function clearAll(): void {
+  raw.value = '';
+  justEvaluated.value = false;
 }
 
 // ============================================================
@@ -361,6 +400,7 @@ async function save(): Promise<void> {
       // 记住上次账户，重置金额/标题/备注/标签，保留类型与账户以便连续记账。
       await settingService.set(LAST_ACCOUNT_KEY, accountId.value);
       raw.value = '';
+      justEvaluated.value = false;
       title.value = '';
       note.value = '';
       selectedTagIds.value = [];
@@ -423,10 +463,14 @@ function onKeydown(e: KeyboardEvent): void {
   const el = e.target as HTMLElement | null;
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
   if (e.key >= '0' && e.key <= '9') press(e.key);
-  else if (e.key === '.') press('.');
+  else if (e.key === '.' || e.key === 'Decimal' || e.code === 'NumpadDecimal' || e.code === 'Period')
+    press('.'); // 主键区句号、小键盘小数点、部分布局的 'Decimal' 都算小数点
   else if (e.key === '+' || e.key === '-' || e.key === '*' || e.key === '/') pressOp(e.key);
+  else if (e.key === '(' || e.key === ')') pressParen(e.key);
+  else if (e.key === '=') equals(); // 等于号：求值并折叠结果，供继续运算
   else if (e.key === 'Backspace') backspace();
-  else if (e.key === 'Enter') void save();
+  else if (e.key === 'Escape' || (e.key.toLowerCase() === 'c' && !e.ctrlKey && !e.metaKey)) clearAll();
+  else if (e.key === 'Enter') void save(); // Enter 仍是「保存整笔」快捷键（金额已实时求值）
   else return;
   e.preventDefault();
 }
@@ -445,6 +489,7 @@ function resetFormState(): void {
   title.value = '';
   note.value = '';
   raw.value = '';
+  justEvaluated.value = false;
   originalTime.value = null;
   originalDateStr.value = '';
   openPicker.value = null;
@@ -559,23 +604,32 @@ onUnmounted(() => {
           <div class="expr num">{{ exprLine }}</div>
         </div>
 
-        <!-- 数字键盘（常驻）：数字 + . + ⌫ + 运算符 -->
-        <div class="numpad numpad-4">
+        <!-- 数字键盘（常驻）：4 行 × 5 列。
+             左列 = 工具（清空/括号/退格），中间三列 = 数字，右列 = 运算符；底排含 = 求值键。
+             括号：expr.ts 求值器本就支持括号，键盘补上录入入口。 -->
+        <div class="numpad numpad-5">
+          <button class="key util" @click="clearAll()" aria-label="清空">C</button>
           <button class="key" @click="press('7')">7</button>
           <button class="key" @click="press('8')">8</button>
           <button class="key" @click="press('9')">9</button>
           <button class="key util" @click="pressOp('/')">÷</button>
+
+          <button class="key util" @click="pressParen('(')">(</button>
           <button class="key" @click="press('4')">4</button>
           <button class="key" @click="press('5')">5</button>
           <button class="key" @click="press('6')">6</button>
           <button class="key util" @click="pressOp('*')">×</button>
+
+          <button class="key util" @click="pressParen(')')">)</button>
           <button class="key" @click="press('1')">1</button>
           <button class="key" @click="press('2')">2</button>
           <button class="key" @click="press('3')">3</button>
           <button class="key util" @click="pressOp('-')">−</button>
+
+          <button class="key util" @click="backspace()" aria-label="删除">⌫</button>
           <button class="key" @click="press('.')">.</button>
           <button class="key" @click="press('0')">0</button>
-          <button class="key util" @click="backspace()" aria-label="删除">⌫</button>
+          <button class="key util accent" @click="equals()" aria-label="等于">=</button>
           <button class="key util accent" @click="pressOp('+')">＋</button>
         </div>
       </div>
@@ -859,7 +913,7 @@ onUnmounted(() => {
   .add-right .add-f-title { order: 3; }
   .add-right .add-pair { order: 4; }              /* 账户·分类 / 日期·标签 两行 */
   .add-right .field:not(.add-f-title) { order: 6; } /* 备注（直接项）；pair 内字段同序无副作用 */
-  .add-left .numpad-4 { order: 7; }
+  .add-left .numpad-5 { order: 7; }
   .add-right .add-right-foot { order: 8; }
 
   /* 固定高度块：不参与伸缩 */
@@ -897,15 +951,16 @@ onUnmounted(() => {
   /* 数字键盘：吃满所有剩余高度、常驻不滚动；行高由 minmax(0,1fr) 弹性分配。
      必须用 minmax(0,1fr) 而非 1fr——后者等价 minmax(auto,1fr)，行高不肯低于内容，
      在编辑模式（多出"删除交易"按钮）会撑高网格、第 4 行被 overflow 裁掉（坑3）。
-     用 .add-card-2col 提高特异性：桌面版 .numpad-4{grid-template-rows:repeat(4,56px)}
+     用 .add-card-2col 提高特异性：桌面版 .numpad-5{grid-template-rows:repeat(4,56px)}
      在本文件更靠后，同特异性会反压本规则，故这里加父级选择器确保手机行高生效。
-     min-height:0 让键盘可随可用高度收缩，确保任何模式下都单屏无滚动（头号红线）。 */
-  .add-card-2col .numpad-4 {
+     min-height:0 让键盘可随可用高度收缩，确保任何模式下都单屏无滚动（头号红线）。
+     行数仍为 4（新增的 = / 括号 / 清空走横向第 5 列，不加行），故单屏高度口径不变。 */
+  .add-card-2col .numpad-5 {
     flex: 1;
     min-height: 0;
     grid-template-rows: repeat(4, minmax(0, 1fr));
   }
-  .numpad-4 .key {
+  .numpad-5 .key {
     height: auto;
     min-height: 0;
     font-size: 20px;
@@ -1011,9 +1066,9 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-/* 4 列数字键盘（3 列数字 + 1 列运算符），保持设计的行高与底片风格 */
-.numpad-4 {
-  grid-template-columns: repeat(4, 1fr);
+/* 5 列数字键盘（工具列 + 3 列数字 + 运算符列），保持设计的行高与底片风格 */
+.numpad-5 {
+  grid-template-columns: repeat(5, 1fr);
   grid-template-rows: repeat(4, 56px);
 }
 

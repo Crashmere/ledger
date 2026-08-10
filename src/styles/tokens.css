@@ -164,7 +164,9 @@ svg { display: block; }
 }
 .nav-item svg { width: 20px; height: 20px; }
 .nav-item:hover { background: var(--surface-2); color: var(--fg); }
-.nav-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+/* 当前页高亮：RouterLink 实际输出的类是 router-link-active（旧 .active 保留兼容）。 */
+.nav-item.active,
+.nav-item.router-link-active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
 
 .sidebar-foot { border-top: 1px solid var(--border); padding-top: 12px; }
 .user-chip { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-md); }
