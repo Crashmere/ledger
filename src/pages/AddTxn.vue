@@ -583,11 +583,13 @@ onUnmounted(() => {
       <!-- ========== 右栏：表单字段区（纵向） ========== -->
       <div class="add-right">
         <!-- 标题（主要信息，选填） -->
-        <div class="field">
+        <div class="field add-f-title">
           <label class="field-label">标题</label>
           <input v-model="title" class="input" placeholder="标题（选填，如：晚饭）" />
         </div>
 
+        <!-- 手机端把 账户·分类 压成一行两 pill（桌面 display:contents 不改变纵向堆叠） -->
+        <div class="add-pair">
         <!-- 账户 -->
         <div class="field">
           <label class="field-label">账户</label>
@@ -670,7 +672,11 @@ onUnmounted(() => {
             </template>
           </div>
         </div>
+        </div>
+        <!-- /add-pair 账户·分类 -->
 
+        <!-- 手机端把 日期·标签 压成一行两 pill -->
+        <div class="add-pair">
         <!-- 日期 -->
         <div class="field">
           <label class="field-label">日期</label>
@@ -712,6 +718,8 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        </div>
+        <!-- /add-pair 日期·标签 -->
 
         <!-- 备注（详细信息，选填） -->
         <div class="field">
@@ -801,14 +809,111 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-/* 窄视口退化为单列（S9 手机端再细做，本次仅留伏笔） */
+/* pill 对：桌面下透明（display:contents），两个 .field 照旧各占一行纵向堆叠——桌面零回归。 */
+.add-pair {
+  display: contents;
+}
+
+/* ============================================================
+   手机端（≤720px）——头号红线：记一笔单屏无滚动。
+   思路（对照 add.html 手机稿）：把两栏卡片压成"一整列 flex"，
+   顺序：类型分段 → 金额 → 账户·分类(一行两 pill) → 日期·标签(一行两 pill)
+        → 备注 → 数字键盘(flex:1 常驻吃满剩余) → 保存(贴底)。
+   关键：外层容器用 100dvh 派生高度（.app 已置 100dvh），键盘 flex:1、其余 flex-shrink:0，
+        不用固定 px 硬凑（坑3）。
+   ============================================================ */
 @media (max-width: 720px) {
-  .add-card-2col {
-    grid-template-columns: 1fr;
+  /* 内容区不滚动、铺满、无内边距（外壳 .app 已收起底栏，把整屏交给记一笔） */
+  .add-content {
+    padding: 0;
+    overflow: hidden;
+    align-items: stretch;
+    min-height: 0;
   }
-  .add-left {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+
+  /* 卡片 = 纵向 flex，占满可用高度；去掉桌面卡片的圆角/居中/上限 */
+  .add-card-2col {
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: none;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    gap: 10px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 左右栏透明化：其子元素成为卡片的直接 flex 项，便于统一排序 */
+  .add-left,
+  .add-right {
+    display: contents;
+  }
+
+  /* 统一排序（display:contents 后，两栏的孙元素在同一 flex 流里）。
+     两个 add-pair 同为 order:4，按源码先后（账户·分类 在前、日期·标签 在后）自然排列，
+     故不用 nth-of-type（首个 div 是标题，会错位）。 */
+  .add-left .segmented { order: 1; }
+  .add-left .amount-display { order: 2; }
+  .add-right .add-f-title { order: 3; }
+  .add-right .add-pair { order: 4; }              /* 账户·分类 / 日期·标签 两行 */
+  .add-right .field:not(.add-f-title) { order: 6; } /* 备注（直接项）；pair 内字段同序无副作用 */
+  .add-left .numpad-4 { order: 7; }
+  .add-right .add-right-foot { order: 8; }
+
+  /* 固定高度块：不参与伸缩 */
+  .add-left .segmented,
+  .add-left .amount-display,
+  .add-right .field,
+  .add-right .add-pair,
+  .add-right .add-right-foot {
+    flex-shrink: 0;
+  }
+
+  /* 金额：手机稿字号 46px，作视觉焦点；压缩上下留白 */
+  .amount-lg {
+    padding: 2px 0;
+  }
+  .amount-lg .val {
+    font-size: 46px;
+  }
+
+  /* 标题/备注字段：紧凑（label 收小，间距收窄） */
+  .add-right .field {
+    gap: 4px;
+  }
+
+  /* pill 对：一行两 pill，各占一半（红线④：账户·分类 / 日期·标签 各一行两个） */
+  .add-pair {
+    display: flex;
+    gap: 8px;
+  }
+  .add-pair .field {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* 数字键盘：吃满所有剩余高度、常驻不滚动；行高由 minmax(0,1fr) 弹性分配。
+     必须用 minmax(0,1fr) 而非 1fr——后者等价 minmax(auto,1fr)，行高不肯低于内容，
+     在编辑模式（多出"删除交易"按钮）会撑高网格、第 4 行被 overflow 裁掉（坑3）。
+     用 .add-card-2col 提高特异性：桌面版 .numpad-4{grid-template-rows:repeat(4,56px)}
+     在本文件更靠后，同特异性会反压本规则，故这里加父级选择器确保手机行高生效。
+     min-height:0 让键盘可随可用高度收缩，确保任何模式下都单屏无滚动（头号红线）。 */
+  .add-card-2col .numpad-4 {
+    flex: 1;
+    min-height: 0;
+    grid-template-rows: repeat(4, minmax(0, 1fr));
+  }
+  .numpad-4 .key {
+    height: auto;
+    min-height: 0;
+    font-size: 20px;
+  }
+
+  /* 保存区贴底：numpad flex:1 已把它顶到底部，这里清掉桌面的 margin-top:auto 以免二次抢占 */
+  .add-right-foot {
+    margin-top: 0;
   }
 }
 

@@ -662,7 +662,7 @@ function clearAll(): void {
     </div>
 
     <!-- 饼图 + 趋势 并排 -->
-    <div class="two-col mt-4" style="height: auto; grid-template-columns: 1fr 1fr">
+    <div class="two-col rep-two-col mt-4">
       <!-- 饼图卡 -->
       <div class="card">
         <div class="card-head">
@@ -840,23 +840,25 @@ function clearAll(): void {
 .chip .x {
   cursor: pointer;
 }
-/* 让筛选 chip、添加/清空按钮位于 add-backdrop(z:20) 之上，
-   否则弹层打开时全屏遮罩会盖住这些 chip，导致 × 移除/清空点不到。 */
+/* 让筛选 chip、添加/清空按钮位于 add-backdrop 之上，
+   否则弹层打开时全屏遮罩会盖住这些 chip，导致 × 移除/清空点不到。
+   S11：整套下拉层级抬到手机底栏(.m-tabbar z:30 / .m-fab z:31)之上，
+   否则窄屏/矮屏下菜单底部会被固定底栏盖住、点击落到底栏误切页。band=40/41/42。 */
 .chip-on,
 .chip-add {
   position: relative;
-  z-index: 22;
+  z-index: 42;
 }
 .add-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 40;
 }
 .add-menu {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  z-index: 21;
+  z-index: 41;
   min-width: 170px;
   max-height: 280px;
   overflow: auto;
@@ -985,5 +987,46 @@ function clearAll(): void {
 .bar-fill {
   height: 100%;
   border-radius: var(--r-pill);
+}
+
+/* 饼图+趋势并排：桌面等分两列（等价于原内联 grid-template-columns:1fr 1fr）。 */
+.rep-two-col {
+  height: auto;
+  grid-template-columns: 1fr 1fr;
+}
+
+/* ============================================================
+   手机端（≤720px）：单列堆叠、chips 横向可滚、统计块自适应。不改任何取数/统计逻辑。
+   ============================================================ */
+@media (max-width: 720px) {
+  /* 饼图 + 趋势 单列堆叠 */
+  .rep-two-col {
+    grid-template-columns: 1fr;
+  }
+
+  /* 汇总三卡：窄屏挤不下三列 → 单列铺满 */
+  .grid.g-3 {
+    grid-template-columns: 1fr;
+  }
+
+  /* 顶部范围选择行：允许换行、搜索框铺满不再靠右挤压 */
+  .rep-head {
+    gap: 10px;
+  }
+  .rep-search {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  /* 饼图行：环 + 图例竖排，图例不溢出 */
+  .donut {
+    width: 128px;
+    height: 128px;
+  }
+
+  /* 添加条件弹层：不超出视口宽度 */
+  .add-menu {
+    max-width: calc(100vw - 32px);
+  }
 }
 </style>

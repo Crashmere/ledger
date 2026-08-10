@@ -972,8 +972,10 @@ function clearAll(): void {
   cursor: pointer;
 }
 
-/* z-index 坑（S9 踩过）：让筛选 chip、添加/清空按钮位于 add-backdrop(z:20) 之上，
-   否则弹层打开时全屏遮罩会盖住这些 chip，导致 × / 清空点不到。 */
+/* z-index 坑（S9 踩过）：让筛选 chip、添加/清空按钮位于 add-backdrop 之上，
+   否则弹层打开时全屏遮罩会盖住这些 chip，导致 × / 清空点不到。
+   S11：整套下拉层级抬到手机底栏(.m-tabbar z:30 / .m-fab z:31)之上，
+   否则窄屏/矮屏下菜单底部会被固定底栏盖住、点击落到底栏误切页。band=40/41/42。 */
 .add-wrap {
   position: relative;
   display: inline-flex;
@@ -983,18 +985,18 @@ function clearAll(): void {
 .chip-on,
 .chip-add {
   position: relative;
-  z-index: 22;
+  z-index: 42;
 }
 .add-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 40;
 }
 .add-menu {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  z-index: 21;
+  z-index: 41;
   min-width: 170px;
   max-height: 280px;
   overflow: auto;
@@ -1163,6 +1165,28 @@ function clearAll(): void {
   }
   .grid.g-3 {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   手机端（≤720px）：双栏已塌单列（列表在上、详情卡在下，单列可用）；
+   此处补齐搜索框、汇总三卡、弹层不溢出。不改搜索/过滤/高亮逻辑。
+   ============================================================ */
+@media (max-width: 720px) {
+  /* 搜索框铺满、字段可点区域足够 */
+  .search-box input.input {
+    height: 44px;
+  }
+
+  /* 添加筛选弹层不超出视口 */
+  .add-menu {
+    max-width: calc(100vw - 32px);
+  }
+
+  /* 详情卡内容不被长文本撑破 */
+  .detail-kv .v {
+    min-width: 0;
+    word-break: break-word;
   }
 }
 </style>

@@ -349,3 +349,77 @@ svg { display: block; }
 /* helper */
 .mono-lg { font-family: var(--font-mono); font-weight: 700; }
 .tag-inline { font-size: var(--fs-xs); background: var(--surface-2); border-radius: var(--r-sm); padding: 2px 7px; color: var(--fg-2); font-weight: 600; }
+
+/* ============================================================
+   8. S11 · 手机 / 窄屏响应式外壳（新增段，不改动上方任何桌面规则）
+   ------------------------------------------------------------
+   断点体系：≥1024px 桌面（与改动前逐像素一致）；≤720px 进入手机形态。
+   （各页原有的 900/960px 过渡收窄断点予以保留，作为平板宽度的两栏→单列过渡。）
+   手机形态：左侧栏收起、改由底部 4 tab 栏 + 中央悬浮记账 FAB 承载导航，
+   顶栏搜索框收成放大镜图标。全部靠 @media 覆盖，无 JS 判定。
+   —— 手机专属元素（.m-tabbar / .m-fab / .m-search-btn）在桌面下 display:none。
+   ============================================================ */
+
+/* 默认（桌面）：三个手机专属元素隐藏，确保桌面零回归。 */
+.m-tabbar, .m-fab, .m-search-btn { display: none; }
+
+@media (max-width: 720px) {
+  /* --- 布局翻转：外壳竖排，侧栏收起，主区铺满 --- */
+  .app { flex-direction: column; height: 100dvh; } /* dvh 跟随移动端地址栏，比 vh 稳（坑3） */
+  .sidebar { display: none; }
+  .main { flex: 1; min-height: 0; }
+
+  /* 记一笔/编辑（专注录入）路由：收起底栏 + FAB，让整屏交给记一笔外壳（头号红线：单屏无滚动）。 */
+  .app-add-mode .m-tabbar, .app-add-mode .m-fab { display: none; }
+  .app-add-mode .content { padding-bottom: 0; }
+
+  /* --- 顶栏：搜索输入框收起，放大镜图标登场（跳 /search） --- */
+  .topbar { padding: 0 16px; gap: 10px; }
+  .topbar .topbar-search { display: none; }
+  .m-search-btn {
+    margin-left: auto;
+    display: grid; place-items: center;
+    width: 40px; height: 40px; border-radius: var(--r-md);
+    color: var(--fg-2); flex-shrink: 0;
+  }
+  .m-search-btn:hover { background: var(--surface-2); }
+  /* 当前在搜索页时高亮放大镜（复用 router-link-active） */
+  .m-search-btn.router-link-active { color: var(--primary); background: var(--primary-soft); }
+
+  /* --- 主内容区：底部留白，避免被固定底栏 + FAB 遮挡（坑2） --- */
+  .content {
+    padding: 16px;
+    padding-bottom: calc(var(--tab-h) + 28px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* --- 底部 tab 栏（固定，5 格：概览·账户·[FAB 让位]·报告·设置） --- */
+  .m-tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+    padding: 0 8px env(safe-area-inset-bottom, 0px);
+    background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-around;
+    z-index: 30; /* 低于页面内弹层遮罩（40~60），不遮挡 modal 操作（坑7） */
+  }
+  .m-tab {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; flex: 1; min-width: 0; height: 100%;
+    color: var(--fg-3); font-size: var(--fs-xs); font-weight: 600;
+  }
+  .m-tab svg { width: 22px; height: 22px; }
+  .m-tab.router-link-active { color: var(--primary); }
+  .m-tab-spacer { flex: 1.2; }
+
+  /* --- 中央悬浮记账 FAB（浮在底栏中央上方，跳 /add） --- */
+  .m-fab {
+    position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    width: 58px; height: 58px; border-radius: 50%;
+    background: var(--primary); color: var(--primary-fg);
+    display: grid; place-items: center;
+    box-shadow: var(--sh-fab); border: 4px solid var(--surface);
+    z-index: 31; /* 略高于底栏、仍低于页面弹层 */
+  }
+  .m-fab:hover { background: var(--primary-strong); }
+  .m-fab svg { width: 28px; height: 28px; }
+}

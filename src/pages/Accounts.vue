@@ -1172,4 +1172,35 @@ function txnAmountClass(t: TxnWithTags): string {
   outline: 2px solid var(--primary);
   outline-offset: -2px;
 }
+
+/* ============================================================
+   手机端（≤720px）：双栏已在 960px 断点塌单列；此处补齐分类网格、弹层、
+   悬停才显的操作按钮改常显。仅样式，不动逻辑。
+   ============================================================ */
+@media (max-width: 720px) {
+  /* 分类网格：三列 → 单列铺满，避免挤压 */
+  .grid.g-3 {
+    grid-template-columns: 1fr;
+  }
+
+  /* 弹层：近满宽居中，不溢出（max-width 560/440/380 在窄屏统一收敛） */
+  .modal {
+    width: calc(100vw - 32px);
+    max-width: 440px;
+  }
+  .tags-wrap {
+    max-width: none;
+  }
+
+  /* cat-actions 桌面靠 hover 显现；触屏无 hover → 常显，保证可点（§4.4） */
+  .cat-actions {
+    opacity: 1;
+  }
+
+  /* 触控命中区：icon 按钮放大到 ≥40px */
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
 </style>

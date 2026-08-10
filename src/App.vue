@@ -4,7 +4,10 @@
 // 对照 设计稿/add.html 的桌面稿：左侧 .sidebar（品牌 + 记一笔主按钮 +
 // 概览/账户/报告/搜索/设置 导航 + 底部"我的账本"单头像）+ 右侧 .main（顶栏 + 内容）。
 // 说明：这是单人本地账本，界面不出现"记账人/成员/TA"字样（红线⑤）。
-// 手机响应式塌底栏属 S9，本阶段不做。
+// S11：补做手机/窄屏响应式——窄屏（≤720px）下左侧栏收起、改由底部 4 tab 栏
+//   （概览/账户/报告/设置）+ 中央悬浮记账 FAB 承载导航；顶栏搜索框收成放大镜图标。
+//   桌面外壳完全不变。切换纯靠 CSS @media（见 tokens.css 尾部 S11 段），无 JS 判定。
+//   底栏/FAB/放大镜三个手机元素在桌面下 display:none，故对桌面零影响。
 // ============================================================
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
@@ -14,6 +17,11 @@ const route = useRoute();
 // 顶栏标题：优先用路由 meta.title，兜底用"记账"。
 const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '记账');
 
+// S11：记一笔/编辑属"专注录入"流程（头号红线：手机单屏无滚动）。
+// 在这两个路由下，手机底栏 tab + FAB 收起（对齐 add.html 手机稿的全屏无底栏形态），
+// 避免固定底栏遮住"保存"按钮、并把整屏高度让给数字键盘。纯视图判定，不涉任何业务状态。
+const isAddRoute = computed(() => route.name === 'add' || route.name === 'txn-edit');
+
 // 主导航项（图标用内联 svg，与设计稿一致）。
 const navItems = [
   { to: '/overview', label: '概览' },
@@ -22,10 +30,15 @@ const navItems = [
   { to: '/search', label: '搜索' },
   { to: '/settings', label: '设置' },
 ] as const;
+
+// S11：手机底部 tab 栏的 4 格（概览/账户/报告/设置）——搜索不在底栏（顶栏放大镜承载），
+// 记一笔由中央 FAB 承载。图标复用侧栏 navItems 的同款内联 SVG，不新画。
+const tabItems = navItems.filter((i) => i.to !== '/search');
+
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'app-add-mode': isAddRoute }">
     <!-- 侧栏 -->
     <aside class="sidebar">
       <div class="brand">
@@ -102,8 +115,52 @@ const navItems = [
           </svg>
           <input placeholder="搜索交易…" />
         </div>
+        <!-- S11 手机端：桌面搜索框在窄屏收起为放大镜图标，点击进搜索页（§二.3）。桌面下 display:none。 -->
+        <RouterLink to="/search" class="m-search-btn" aria-label="搜索">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4-4" />
+          </svg>
+        </RouterLink>
       </div>
       <RouterView />
     </div>
+
+    <!-- S11 手机端外壳：底部 4 tab 栏 + 中央悬浮记账 FAB（参照 设计稿/overview.html 手机稿）。
+         桌面下整体 display:none，仅 @media(max-width:720px) 显现，故桌面零回归。
+         图标复用侧栏同款 SVG。z-index 低于页面内弹层（40~60），避免遮挡 modal 操作（坑7）。 -->
+    <RouterLink to="/add" class="m-fab" aria-label="记一笔">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </RouterLink>
+    <nav class="m-tabbar">
+      <template v-for="(item, idx) in tabItems" :key="item.to">
+        <RouterLink :to="item.to" class="m-tab">
+          <!-- 概览 -->
+          <svg v-if="item.to === '/overview'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </svg>
+          <!-- 账户 -->
+          <svg v-else-if="item.to === '/accounts'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="5" width="20" height="14" rx="2" />
+            <path d="M2 10h20" />
+          </svg>
+          <!-- 报告 -->
+          <svg v-else-if="item.to === '/reports'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v18h18" />
+            <path d="M18 8l-5 5-3-3-4 4" />
+          </svg>
+          <!-- 设置 -->
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.9 1.1V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 3.6 15H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 5 8" />
+          </svg>
+          {{ item.label }}
+        </RouterLink>
+        <!-- 概览·账户 之后插入 FAB 让位占位（对齐设计稿 .tab-spacer） -->
+        <span v-if="idx === 1" class="m-tab-spacer" aria-hidden="true"></span>
+      </template>
+    </nav>
   </div>
 </template>
