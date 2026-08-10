@@ -254,6 +254,9 @@ async function exportToFile(): Promise<void> {
 }
 
 // ---------- 卡片 B：GitHub 配置 ----------
+// owner/repo/branch/path 已内置为代码常量（见 config/sync-defaults），
+// UI 不再让用户编辑；此处只保留 Token 输入。cfgForm 仍存全字段仅为
+// 复用既有 saveConfig/resolveConfig（它们从内置默认/已存配置取仓库信息）。
 const cfgForm = ref<{ owner: string; repo: string; branch: string; path: string; token: string }>({
   owner: '',
   repo: '',
@@ -266,11 +269,14 @@ const savingCfg = ref(false);
 const cfgMsg = ref('');
 const cfgError = ref('');
 
+/** 展示用的内置仓库标识（owner/repo，来自已加载配置）。 */
+const repoLabel = computed(() => `${cfgForm.value.owner}/${cfgForm.value.repo}`);
+
 const testing = ref(false);
 const testMsg = ref('');
 const testOk = ref<boolean | null>(null);
 
-/** 页面加载：回填配置（token 只显示「已配置」状态，不回填明文）。 */
+/** 页面加载：回填仓库信息（用于展示）与 token「已配置」状态（不回填明文）。 */
 async function loadCfgIntoForm(): Promise<void> {
   const cfg = await loadConfig();
   cfgForm.value = {
@@ -284,12 +290,9 @@ async function loadCfgIntoForm(): Promise<void> {
   lastBackupAt.value = await getLastBackupAt();
 }
 
-/** 配置是否完整到可以发请求（token 已存或本次已输入）。 */
+/** 配置是否完整到可以发请求（仓库来自内置常量，故只需 token 已存或本次已输入）。 */
 const cfgReady = computed(
-  () =>
-    !!cfgForm.value.owner.trim() &&
-    !!cfgForm.value.repo.trim() &&
-    (tokenConfigured.value || !!cfgForm.value.token.trim()),
+  () => tokenConfigured.value || !!cfgForm.value.token.trim(),
 );
 
 async function saveCloudConfig(): Promise<void> {
@@ -298,6 +301,7 @@ async function saveCloudConfig(): Promise<void> {
   cfgMsg.value = '';
   cfgError.value = '';
   try {
+    // 仓库四项沿用已加载值（内置默认或本机已存），只有 token 由用户在此输入。
     await saveConfig({
       owner: cfgForm.value.owner,
       repo: cfgForm.value.repo,
@@ -307,11 +311,7 @@ async function saveCloudConfig(): Promise<void> {
     });
     if (cfgForm.value.token.trim()) tokenConfigured.value = true;
     cfgForm.value.token = ''; // 清空输入框，避免明文停留
-    // 回填规范化后的 branch/path。
-    const cfg = await loadConfig();
-    cfgForm.value.branch = cfg.branch;
-    cfgForm.value.path = cfg.path;
-    cfgMsg.value = '配置已保存。';
+    cfgMsg.value = 'Token 已保存。';
   } catch (e) {
     cfgError.value = `保存失败：${friendlyError(e)}`;
   } finally {
@@ -370,7 +370,7 @@ async function doBackup(): Promise<void> {
   backupMsg.value = '';
   backupError.value = '';
   if (!cfgReady.value) {
-    backupError.value = '请先填写 owner / repo，并配置 Token。';
+    backupError.value = '请先配置 Token。';
     return;
   }
   backingUp.value = true;
@@ -400,7 +400,7 @@ async function startRestore(): Promise<void> {
   cloudSnapshot.value = null;
   cloudCounts.value = null;
   if (!cfgReady.value) {
-    restoreError.value = '请先填写 owner / repo，并配置 Token。';
+    restoreError.value = '请先配置 Token。';
     return;
   }
   restoreState.value = 'fetching';
@@ -910,29 +910,14 @@ onMounted(() => {
               <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
             </svg>
             <span>
-              把快照推送到你自己的 GitHub 私有仓库做异地备份。建议使用
+              备份仓库已内置为 <b class="num">{{ repoLabel }}</b>，无需在此配置。
+              新设备只需粘贴一次 <b>Token</b> 即可备份 / 恢复。建议使用
               <b>fine-grained PAT</b>，权限最小化（只授予<b>目标单仓</b>的 <b>Contents 读写</b>），便于随时吊销。
               Token 仅存于本机、不写入任何快照。
             </span>
           </div>
 
           <div class="form-grid">
-            <div class="field">
-              <label class="field-label">Owner（用户名 / 组织）</label>
-              <input v-model="cfgForm.owner" class="input" placeholder="如：your-name" />
-            </div>
-            <div class="field">
-              <label class="field-label">Repo（仓库名）</label>
-              <input v-model="cfgForm.repo" class="input" placeholder="如：ivy_bak" />
-            </div>
-            <div class="field">
-              <label class="field-label">Branch（分支）</label>
-              <input v-model="cfgForm.branch" class="input" placeholder="main" />
-            </div>
-            <div class="field">
-              <label class="field-label">Path（备份文件路径）</label>
-              <input v-model="cfgForm.path" class="input" placeholder="ivy-wallet-snapshot.json" />
-            </div>
             <div class="field field-full">
               <label class="field-label">
                 Token（Personal Access Token）
@@ -952,7 +937,7 @@ onMounted(() => {
 
           <div class="row gap-3 mt-4">
             <button class="btn btn-primary" :disabled="savingCfg" @click="saveCloudConfig">
-              {{ savingCfg ? '保存中…' : '保存配置' }}
+              {{ savingCfg ? '保存中…' : '保存 Token' }}
             </button>
             <button class="btn btn-ghost" :disabled="testing || !cfgReady" @click="testConn">
               {{ testing ? '测试中…' : '测试连接' }}
@@ -999,7 +984,7 @@ onMounted(() => {
           </div>
 
           <div v-if="!cfgReady" class="faint mt-3" style="font-size: 12px">
-            需先在上方填写 owner / repo 并配置 Token，才能备份或恢复。
+            需先在上方配置 Token，才能备份或恢复。
           </div>
 
           <div v-if="backupMsg" class="alert success mt-3">{{ backupMsg }}</div>

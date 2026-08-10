@@ -29,6 +29,7 @@ import {
   type SnapshotCounts,
 } from './snapshot';
 import { SYNC_DEFAULTS, SYNC_KEYS } from './keys';
+import { SYNC_REPO_DEFAULTS } from '../../config/sync-defaults';
 
 export type { BackupSnapshot, SnapshotCounts } from './snapshot';
 export type { GithubConfig, ConnectionResult, RemoteFile } from './github';
@@ -39,7 +40,13 @@ export { SYNC_KEYS, SYNC_DEFAULTS, isSyncKey } from './keys';
 // ------------------------------------------------------------
 // 配置读写（sync.github.*）
 // ------------------------------------------------------------
-/** 从 setting 表读取 GitHub 配置（token 也读出，供发请求；UI 不明文回显）。 */
+/**
+ * 从 setting 表读取 GitHub 配置（token 也读出，供发请求；UI 不明文回显）。
+ * owner/repo/branch/path 若本机从未配置（setting 为空），回落到内置的
+ * SYNC_REPO_DEFAULTS —— 新设备无需手填仓库信息，只需再输 Token。
+ * 已存的用户配置优先级高于内置默认值（用户改过就以用户的为准）。
+ * Token 无内置默认（安全红线：不写进代码），未配置即为空。
+ */
 export async function loadConfig(): Promise<GithubConfig> {
   const [owner, repo, branch, path, token] = await Promise.all([
     settingService.get(SYNC_KEYS.owner),
@@ -49,10 +56,10 @@ export async function loadConfig(): Promise<GithubConfig> {
     settingService.get(SYNC_KEYS.token),
   ]);
   return withDefaults({
-    owner: owner ?? '',
-    repo: repo ?? '',
-    branch: branch ?? SYNC_DEFAULTS.branch,
-    path: path ?? SYNC_DEFAULTS.path,
+    owner: owner ?? SYNC_REPO_DEFAULTS.owner,
+    repo: repo ?? SYNC_REPO_DEFAULTS.repo,
+    branch: branch ?? SYNC_REPO_DEFAULTS.branch,
+    path: path ?? SYNC_REPO_DEFAULTS.path,
     token: token ?? '',
   });
 }
