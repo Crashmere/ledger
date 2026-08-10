@@ -1,10 +1,11 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 
 // S3：概览（/overview）是应用首页（打开即速览本月）；记一笔（/add）为真实页。
-// S4：账户（/accounts）为真实页（账户/分类/标签管理）。报告/搜索仍用占位组件 StubPage，属后续阶段。
+// S4：账户（/accounts）为真实页（账户/分类/标签管理）。
 // S5：交易编辑（/txn/:id/edit）复用 AddTxn.vue（同组件靠 route.params.id 区分新建/编辑模式）。
-// S7：设置（/settings）为真实页（数据导入）。
-// meta.title 供顶栏标题使用。
+// S7：设置（/settings）为真实页（数据导入/导出/云备份）。
+// S9：报告（/reports）为真实页（报表统计）。S10：搜索（/search）为真实页。
+// 全部页面均已落地，占位组件 StubPage 已移除。meta.title 供顶栏标题使用。
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/overview' },
   {
