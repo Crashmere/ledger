@@ -41,7 +41,7 @@ const routes: RouteRecordRaw[] = [
     path: '/search',
     name: 'search',
     meta: { title: '搜索' },
-    component: () => import('../pages/StubPage.vue'),
+    component: () => import('../pages/Search.vue'),
   },
   {
     path: '/settings',
