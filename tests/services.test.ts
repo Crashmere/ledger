@@ -182,7 +182,7 @@ describe('CategoryService', () => {
 // TagService: CASCADE
 // ------------------------------------------------------------
 describe('TagService', () => {
-  it('删标签 CASCADE：txn_tag 关联清除、交易仍在', async () => {
+  it('删标签（软删）：交易上的该标签消失、交易仍在、txn_tag 关联行物理保留', async () => {
     const a = await accounts.create({ name: 'A', color: 1 });
     const tag = await tags.create({ name: '出差', color: 1 });
     const t = await txns.create({
@@ -198,13 +198,20 @@ describe('TagService', () => {
 
     await tags.remove(tag.id);
 
-    // 交易仍在，但标签关联被级联清除
+    // 交易仍在，但读取时已过滤掉软删标签
     const after = await txns.get(t.id);
     expect(after).not.toBeNull();
     expect(after?.tags).toHaveLength(0);
-    // txn_tag 物理清空
+    // 标签本体软删：不再出现在 list，但物理行仍在（deleted_at 被写）
+    expect(await tags.list()).toHaveLength(0);
+    const tagRow = await adapter.get<{ deleted_at: number | null }>(
+      `SELECT deleted_at FROM tag WHERE id = ?`,
+      [tag.id],
+    );
+    expect(tagRow?.deleted_at).not.toBeNull();
+    // txn_tag 关联行物理保留（跟随父 txn 合并，不做级联物理删除）
     const links = await adapter.all(`SELECT * FROM txn_tag WHERE tag_id = ?`, [tag.id]);
-    expect(links).toHaveLength(0);
+    expect(links).toHaveLength(1);
   });
 });
 
@@ -347,7 +354,7 @@ describe('TxnService tagIds 与 query', () => {
     expect(page.map((t) => t.time)).toEqual([200, 300]);
   });
 
-  it('remove 删交易，CASCADE 清 txn_tag', async () => {
+  it('remove 删交易（软删）：交易不再可见、txn_tag 关联行保留、标签本体仍在', async () => {
     const a = await accounts.create({ name: 'A', color: 1 });
     const tag = await tags.create({ name: 't', color: 1 });
     const t = await txns.create({
@@ -358,8 +365,14 @@ describe('TxnService tagIds 与 query', () => {
     });
     await txns.remove(t.id);
     expect(await txns.get(t.id)).toBeNull();
+    // 软删：交易物理行仍在（deleted_at 被写），txn_tag 关联行随父 txn 保留
+    const txnRow = await adapter.get<{ deleted_at: number | null }>(
+      `SELECT deleted_at FROM txn WHERE id = ?`,
+      [t.id],
+    );
+    expect(txnRow?.deleted_at).not.toBeNull();
     const links = await adapter.all(`SELECT * FROM txn_tag WHERE txn_id = ?`, [t.id]);
-    expect(links).toHaveLength(0);
+    expect(links).toHaveLength(1);
     // 标签本体仍在
     expect(await tags.list()).toHaveLength(1);
   });
@@ -430,5 +443,125 @@ describe('SettingService', () => {
     await settings.remove('theme');
     expect(await settings.get('theme')).toBeNull();
     expect(await settings.all()).toEqual({ lang: 'zh' });
+  });
+});
+
+// ------------------------------------------------------------
+// 软删除（v2）不变量：已删记录必须从所有视图消失，且写操作 bump updated_at
+// 攻击面：删除后仍出现在 query / balance / stats / breakdown 都算数据泄漏
+// ------------------------------------------------------------
+describe('软删除不变量（L2 基建）', () => {
+  it('软删交易后：query 不返回、余额排除、summary/trend/breakdown 排除', async () => {
+    const a = await accounts.create({ name: 'A', color: 1, initialBalance: 1000 });
+    const cat = await categories.create({ accountId: a.id, name: '餐饮', color: 1 });
+    const keep = await txns.create({ type: 'expense', amount: 100, accountId: a.id, categoryId: cat.id });
+    const gone = await txns.create({ type: 'expense', amount: 300, accountId: a.id, categoryId: cat.id });
+
+    // 删前：两笔都在，余额 1000-100-300=600，支出合计 400
+    expect(await txns.query({})).toHaveLength(2);
+    expect(await accounts.balance(a.id)).toBe(600);
+    expect((await stats.summary()).expense).toBe(400);
+
+    await txns.remove(gone.id);
+
+    // 删后：只剩 keep；余额回到 1000-100=900；支出只剩 100
+    const rows = await txns.query({});
+    expect(rows.map((t) => t.id)).toEqual([keep.id]);
+    expect(await accounts.balance(a.id)).toBe(900);
+    expect((await stats.summary()).expense).toBe(100);
+    // breakdown 也只剩 100
+    const bd = await stats.breakdownByCategory({});
+    expect(bd.reduce((s, r) => s + r.amount, 0)).toBe(100);
+    // trend 汇总同样只剩 100
+    const tr = await stats.trend({ granularity: 'day' });
+    expect(tr.reduce((s, p) => s + p.expense, 0)).toBe(100);
+  });
+
+  it('软删账户后：list 不返回、get 为 null，且不能在其下建分类/交易', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await accounts.remove(a.id);
+
+    expect((await accounts.list()).map((x) => x.id)).toEqual([b.id]);
+    expect(await accounts.get(a.id)).toBeNull();
+    // 已删账户不能再挂新分类 / 新交易
+    await expectAppError(() => categories.create({ accountId: a.id, name: 'x', color: 1 }), 'VALIDATION');
+    await expectAppError(() => txns.create({ type: 'expense', amount: 10, accountId: a.id }), 'VALIDATION');
+  });
+
+  it('账户 RESTRICT 仅看未删子记录：删掉全部子交易后账户可删', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const t = await txns.create({ type: 'income', amount: 100, accountId: a.id });
+    // 有未删交易 → 拒删
+    await expectAppError(() => accounts.remove(a.id), 'RESTRICT');
+    // 软删该交易后，账户不再有未删子记录 → 可删
+    await txns.remove(t.id);
+    await expect(accounts.remove(a.id)).resolves.toBeUndefined();
+    expect(await accounts.get(a.id)).toBeNull();
+  });
+
+  it('转账的转入账户也算子记录：对端账户在被引用时不可删', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const b = await accounts.create({ name: 'B', color: 2 });
+    await txns.create({ type: 'transfer', amount: 200, accountId: a.id, toAccountId: b.id });
+    // b 作为 to_account_id 被引用 → 不可删
+    await expectAppError(() => accounts.remove(b.id), 'RESTRICT');
+  });
+
+  it('软删分类：SET NULL 语义等价——交易仍在、categoryId 变 null 且交易 updated_at 被 bump', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const cat = await categories.create({ accountId: a.id, name: '餐饮', color: 1 });
+    const t = await txns.create({ type: 'expense', amount: 100, accountId: a.id, categoryId: cat.id });
+
+    const beforeRow = await adapter.get<{ updated_at: number }>(
+      `SELECT updated_at FROM txn WHERE id = ?`,
+      [t.id],
+    );
+
+    await new Promise((r) => setTimeout(r, 2)); // 让时间戳可区分
+    await categories.remove(cat.id);
+
+    const got = await txns.get(t.id);
+    expect(got).not.toBeNull();
+    expect(got?.categoryId).toBeNull();
+    // 分类从 listByAccount 消失
+    expect(await categories.listByAccount(a.id)).toHaveLength(0);
+    // 交易 updated_at 被 bump（参与后续合并）
+    const afterRow = await adapter.get<{ updated_at: number }>(
+      `SELECT updated_at FROM txn WHERE id = ?`,
+      [t.id],
+    );
+    expect(afterRow!.updated_at).toBeGreaterThan(beforeRow!.updated_at);
+  });
+
+  it('create/update 都写 updated_at：create 时 =created_at，update 后 > created_at', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const t = await txns.create({ type: 'expense', amount: 100, accountId: a.id });
+
+    const row1 = await adapter.get<{ created_at: number; updated_at: number }>(
+      `SELECT created_at, updated_at FROM txn WHERE id = ?`,
+      [t.id],
+    );
+    expect(row1!.updated_at).toBe(row1!.created_at);
+
+    await new Promise((r) => setTimeout(r, 2));
+    await txns.update(t.id, { amount: 200 });
+
+    const row2 = await adapter.get<{ created_at: number; updated_at: number }>(
+      `SELECT created_at, updated_at FROM txn WHERE id = ?`,
+      [t.id],
+    );
+    expect(row2!.updated_at).toBeGreaterThan(row2!.created_at);
+  });
+
+  it('已软删标签不参与 tagIds 过滤：按已删标签查不到交易', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const tag = await tags.create({ name: 'x', color: 1 });
+    await txns.create({ type: 'expense', amount: 100, accountId: a.id, tagIds: [tag.id] });
+
+    expect(await txns.query({ tagIds: [tag.id] })).toHaveLength(1);
+    await tags.remove(tag.id);
+    // 标签软删后，按它过滤应查不到（关联行还在，但标签已删）
+    expect(await txns.query({ tagIds: [tag.id] })).toHaveLength(0);
   });
 });

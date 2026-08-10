@@ -79,7 +79,7 @@ describe('exportSnapshot（导出快照）', () => {
     expect(c.txn_tag).toBe(1);
     expect(snap.app).toBe('ivy-wallet');
     expect(snap.formatVersion).toBe(1);
-    expect(snap.dbUserVersion).toBe(1);
+    expect(snap.dbUserVersion).toBe(2);
   });
 
   it('setting 剔除所有 sync.github.*（Token 不进快照）', async () => {
@@ -189,7 +189,7 @@ describe('base64 UTF-8 往返（含中文）', () => {
     const snap = await exportSnapshot(adapter);
     const text = serializeSnapshot(snap);
     const round = base64ToUtf8(utf8ToBase64(text));
-    const parsed = parseSnapshot(round, 1);
+    const parsed = parseSnapshot(round, 2);
     expect(parsed.ok).toBe(true);
     expect(snapshotCounts(parsed.snapshot!).txn).toBe(468);
     adapter.close();

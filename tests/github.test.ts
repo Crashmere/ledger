@@ -147,6 +147,43 @@ describe('putRemoteFile', () => {
     const [, putInit] = fetchMock.mock.calls[1];
     expect(putInit.body as string).not.toContain('ghp_SECRET');
   });
+
+  describe('乐观锁（expectedSha）', () => {
+    it('expectedSha=string → 跳过内部 GET，直接 PUT 带该 sha', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(mkRes(200, {})); // 只有一次 PUT
+      vi.stubGlobal('fetch', fetchMock);
+
+      await putRemoteFile(CFG, 'merged', 'sync: x', { expectedSha: 'REMOTE_SHA' });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1); // 无内部 GET
+      const [, putInit] = fetchMock.mock.calls[0];
+      expect(putInit.method).toBe('PUT');
+      const body = JSON.parse(putInit.body as string) as Record<string, unknown>;
+      expect(body.sha).toBe('REMOTE_SHA');
+    });
+
+    it('expectedSha=null → 首次创建，PUT 不带 sha 且不 GET', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(mkRes(201, {}));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await putRemoteFile(CFG, 'first', 'sync: x', { expectedSha: null });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, putInit] = fetchMock.mock.calls[0];
+      const body = JSON.parse(putInit.body as string) as Record<string, unknown>;
+      expect(body.sha).toBeUndefined();
+    });
+
+    it('expectedSha=string 且远端已变 → PUT 409 抛 GithubError(409)', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(mkRes(409, { message: 'conflict' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(
+        putRemoteFile(CFG, 'x', 'm', { expectedSha: 'STALE' }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(fetchMock).toHaveBeenCalledTimes(1); // 未做内部 GET
+    });
+  });
 });
 
 describe('testConnection（仓库→分支→文件 三级校验）', () => {

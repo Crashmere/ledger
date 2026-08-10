@@ -34,6 +34,8 @@ export const account = sqliteTable('account', {
   includeInBalance: integer('include_in_balance').notNull().default(1), // 0/1
   orderNum: real('order_num').notNull(),
   createdAt: integer('created_at').notNull(), // epoch ms
+  updatedAt: integer('updated_at'), // v2: 最后修改 epoch ms（同步 LWW 用）
+  deletedAt: integer('deleted_at'), // v2: 软删墓碑，非空=已删
 });
 
 // ------------------------------------------------------------
@@ -52,6 +54,8 @@ export const category = sqliteTable(
     icon: text('icon'),
     orderNum: real('order_num').notNull(),
     createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at'), // v2
+    deletedAt: integer('deleted_at'), // v2
   },
   (t) => ({
     accountIdx: index('idx_category_account').on(t.accountId),
@@ -83,6 +87,8 @@ export const txn = sqliteTable(
     title: text('title'),
     note: text('note'),
     createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at'), // v2
+    deletedAt: integer('deleted_at'), // v2
   },
   (t) => ({
     timeIdx: index('idx_txn_time').on(t.time),
@@ -103,6 +109,8 @@ export const tag = sqliteTable('tag', {
   icon: text('icon'),
   orderNum: real('order_num').notNull(),
   createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at'), // v2
+  deletedAt: integer('deleted_at'), // v2
 });
 
 // ------------------------------------------------------------
@@ -149,4 +157,4 @@ export type Setting = typeof setting.$inferSelect;
 
 // 建库/迁移时在每个连接执行，确保外键规则生效：
 export const ENABLE_FK = sql`PRAGMA foreign_keys = ON;`;
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;

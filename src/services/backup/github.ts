@@ -148,24 +148,49 @@ export async function getRemoteFile(
 }
 
 // ------------------------------------------------------------
-// PUT：写入/覆盖文件。覆盖已存在文件必须带 sha（先 GET 拿）。
-//   - 内部先 GET：拿到 sha → 覆盖；404 → 首次创建（不带 sha）。
+// PUT：写入/覆盖文件。
+//   - 默认（opts.expectedSha === undefined）：保持旧行为，内部先 GET 探测
+//     当前 sha（覆盖必带；404 视为首次创建，不带 sha）。适合"单纯备份覆盖"。
+//   - 乐观锁（opts.expectedSha 为 string）：显式携带调用方基于的 sha，跳过内部
+//     GET。若远端在此期间已变（sha 不符），服务端返回 409 → 抛 GithubError(409)，
+//     由同步编排层据此重跑"GET→合并→PUT"整轮。适合 L2 无损同步。
+//   - opts.expectedSha === null：显式声明"远端应无此文件"，按首次创建 PUT。
 //   - message 不含 Token，仅时间戳。
 // ------------------------------------------------------------
+export interface PutRemoteOptions {
+  /**
+   * 乐观锁 sha：
+   *   - undefined（默认）→ 内部先 GET 探测当前 sha 再 PUT（自动覆盖，旧行为）。
+   *   - string → 显式携带该 sha PUT；远端若已变（sha 不符）服务端返回 409。
+   *   - null → 显式声明"远端应无此文件"，按首次创建 PUT（不带 sha）。
+   */
+  expectedSha?: string | null;
+}
+
 export async function putRemoteFile(
   cfg: GithubConfig,
   contentText: string,
   commitMessage: string,
+  opts: PutRemoteOptions = {},
 ): Promise<void> {
-  // 先探测已存在文件的 sha（覆盖必带；404 视为首次创建）。
-  const existing = await getRemoteFile(cfg);
+  // 决定本次 PUT 是否携带 sha。
+  let sha: string | undefined;
+  if (opts.expectedSha === undefined) {
+    // 旧行为：内部探测已存在文件的 sha（覆盖必带；404 视为首次创建）。
+    const existing = await getRemoteFile(cfg);
+    if (existing) sha = existing.sha;
+  } else if (opts.expectedSha !== null) {
+    // 乐观锁：用调用方给定的 sha，不再自行 GET。
+    sha = opts.expectedSha;
+  }
+  // opts.expectedSha === null → sha 保持 undefined（首次创建）。
 
   const bodyObj: Record<string, string> = {
     message: commitMessage,
     content: utf8ToBase64(contentText),
     branch: cfg.branch,
   };
-  if (existing) bodyObj.sha = existing.sha;
+  if (sha) bodyObj.sha = sha;
 
   let res: Response;
   try {

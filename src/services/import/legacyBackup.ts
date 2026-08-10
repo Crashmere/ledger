@@ -260,8 +260,8 @@ export async function persistImport(
 
     for (const a of r.accounts) {
       await tx.run(
-        `${verb} account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at)
-         VALUES(?,?,?,?,?,?,?,?)`,
+        `${verb} account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,?,NULL)`,
         [
           a.id,
           a.name,
@@ -271,21 +271,23 @@ export async function persistImport(
           a.includeInBalance ? 1 : 0,
           a.orderNum,
           a.createdAt,
+          a.createdAt, // 导入即"新建"：updated_at = created_at
         ],
       );
     }
 
     for (const c of r.categories) {
       await tx.run(
-        `${verb} category(id,account_id,name,color,icon,order_num,created_at) VALUES(?,?,?,?,?,?,?)`,
-        [c.id, c.accountId, c.name, c.color, c.icon, c.orderNum, c.createdAt],
+        `${verb} category(id,account_id,name,color,icon,order_num,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,NULL)`,
+        [c.id, c.accountId, c.name, c.color, c.icon, c.orderNum, c.createdAt, c.createdAt],
       );
     }
 
     for (const t of r.txns) {
       await tx.run(
-        `${verb} txn(id,type,amount,account_id,to_account_id,category_id,time,title,note,created_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `${verb} txn(id,type,amount,account_id,to_account_id,category_id,time,title,note,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)`,
         [
           t.id,
           t.type,
@@ -296,6 +298,7 @@ export async function persistImport(
           t.time,
           t.title,
           t.note,
+          t.createdAt,
           t.createdAt,
         ],
       );

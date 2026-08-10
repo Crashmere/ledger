@@ -37,6 +37,8 @@ export class StatsServiceImpl implements StatsService {
 
     // 只统计收入/支出；转账被这条 type 过滤天然排除，不进 income/expense/net。
     where.push(`type IN ('income', 'expense')`);
+    // 软删过滤（v2）：已删交易不计入统计。
+    where.push(`deleted_at IS NULL`);
 
     if (q?.accountIds && q.accountIds.length > 0) {
       where.push(`account_id IN (${Array(q.accountIds.length).fill('?').join(', ')})`);
@@ -88,6 +90,8 @@ export class StatsServiceImpl implements StatsService {
     }
     where.push(`t.type IN (${placeholders(types.length)})`);
     params.push(...types);
+    // 软删过滤（v2）：已删交易不计入。
+    where.push(`t.deleted_at IS NULL`);
 
     if (q.accountIds && q.accountIds.length > 0) {
       // 收支交易无 to_account_id 语义，这里只按转出/收付账户 account_id 命中。
@@ -113,7 +117,7 @@ export class StatsServiceImpl implements StatsService {
               SUM(t.amount)        AS amount,
               COUNT(*)             AS cnt
          FROM txn t
-         LEFT JOIN category c ON c.id = t.category_id
+         LEFT JOIN category c ON c.id = t.category_id AND c.deleted_at IS NULL
         WHERE ${where.join(' AND ')}
         GROUP BY COALESCE(c.name, ?)
         ORDER BY amount DESC`,
@@ -141,6 +145,8 @@ export class StatsServiceImpl implements StatsService {
 
     // 白名单：只取收支，transfer 排除。
     where.push(`type IN ('income', 'expense')`);
+    // 软删过滤（v2）：已删交易不计入。
+    where.push(`deleted_at IS NULL`);
 
     if (q.accountIds && q.accountIds.length > 0) {
       where.push(`account_id IN (${placeholders(q.accountIds.length)})`);

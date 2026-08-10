@@ -106,6 +106,29 @@ export function parseSnapshot(text: string, currentDbUserVersion: number): Parse
 
 /** 校验一个已解析的对象是否为合法快照。 */
 export function validateSnapshot(data: unknown, currentDbUserVersion: number): ParseSnapshotResult {
+  return validateSnapshotImpl(data, currentDbUserVersion, false);
+}
+
+/**
+ * 宽松校验（供 L2 合并用）：结构照常校验（app/formatVersion/tables 齐全），
+ * 但**不要求 dbUserVersion 与当前库一致** —— 远端可能是旧设备写的 v1 快照，
+ * 合并算法会在归一化时兼容它。仍要求 dbUserVersion 是数字（防脏数据）。
+ */
+export function parseSnapshotLenient(text: string): ParseSnapshotResult {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, error: '不是有效的 JSON，无法识别为备份快照。' };
+  }
+  return validateSnapshotImpl(data, 0, true);
+}
+
+function validateSnapshotImpl(
+  data: unknown,
+  currentDbUserVersion: number,
+  lenientVersion: boolean,
+): ParseSnapshotResult {
   if (typeof data !== 'object' || data === null) {
     return { ok: false, error: '快照顶层不是对象。' };
   }
@@ -120,7 +143,10 @@ export function validateSnapshot(data: unknown, currentDbUserVersion: number): P
       error: `快照格式版本不支持（期望 ${SNAPSHOT_FORMAT_VERSION}，实际 ${String(obj.formatVersion)}）。`,
     };
   }
-  if (typeof obj.dbUserVersion !== 'number' || obj.dbUserVersion !== currentDbUserVersion) {
+  if (typeof obj.dbUserVersion !== 'number') {
+    return { ok: false, error: `快照缺少合法的 dbUserVersion。` };
+  }
+  if (!lenientVersion && obj.dbUserVersion !== currentDbUserVersion) {
     return {
       ok: false,
       error: `数据库版本不一致（快照 ${String(obj.dbUserVersion)}，当前 ${currentDbUserVersion}），拒绝恢复以免结构错配。`,
@@ -185,10 +211,12 @@ export async function restoreSnapshot(
     await tx.run('DELETE FROM tag');
 
     // 2) 正外键顺序写回（显式列名，保留原 id）。
+    //    v2：写回 updated_at / deleted_at。兼容 v1 快照（缺列时回落：
+    //    updated_at→created_at，deleted_at→null）。
     for (const a of account) {
       await tx.run(
-        `INSERT INTO account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at)
-         VALUES(?,?,?,?,?,?,?,?)`,
+        `INSERT INTO account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?)`,
         [
           a.id,
           a.name,
@@ -198,22 +226,34 @@ export async function restoreSnapshot(
           a.include_in_balance,
           a.order_num,
           a.created_at,
+          a.updated_at ?? a.created_at,
+          a.deleted_at ?? null,
         ],
       );
     }
 
     for (const c of category) {
       await tx.run(
-        `INSERT INTO category(id,account_id,name,color,icon,order_num,created_at)
-         VALUES(?,?,?,?,?,?,?)`,
-        [c.id, c.account_id, c.name, c.color, c.icon ?? null, c.order_num, c.created_at],
+        `INSERT INTO category(id,account_id,name,color,icon,order_num,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,?)`,
+        [
+          c.id,
+          c.account_id,
+          c.name,
+          c.color,
+          c.icon ?? null,
+          c.order_num,
+          c.created_at,
+          c.updated_at ?? c.created_at,
+          c.deleted_at ?? null,
+        ],
       );
     }
 
     for (const t of txn) {
       await tx.run(
-        `INSERT INTO txn(id,type,amount,account_id,to_account_id,category_id,time,title,note,created_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO txn(id,type,amount,account_id,to_account_id,category_id,time,title,note,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           t.id,
           t.type,
@@ -225,14 +265,26 @@ export async function restoreSnapshot(
           t.title ?? null,
           t.note ?? null,
           t.created_at,
+          t.updated_at ?? t.created_at,
+          t.deleted_at ?? null,
         ],
       );
     }
 
     for (const g of tag) {
       await tx.run(
-        `INSERT INTO tag(id,name,color,icon,order_num,created_at) VALUES(?,?,?,?,?,?)`,
-        [g.id, g.name, g.color, g.icon ?? null, g.order_num, g.created_at],
+        `INSERT INTO tag(id,name,color,icon,order_num,created_at,updated_at,deleted_at)
+         VALUES(?,?,?,?,?,?,?,?)`,
+        [
+          g.id,
+          g.name,
+          g.color,
+          g.icon ?? null,
+          g.order_num,
+          g.created_at,
+          g.updated_at ?? g.created_at,
+          g.deleted_at ?? null,
+        ],
       );
     }
 

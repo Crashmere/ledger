@@ -11,21 +11,7 @@
 
 import Database from 'better-sqlite3';
 import type { SqliteAdapter } from '../src/db/adapter';
-import { DDL_V1 } from '../src/db/migrations/ddl_v1';
-
-/** 逐条拆分 DDL（与 src/db/migrations/index.ts 的实现保持一致）。 */
-function splitStatements(script: string): string[] {
-  return script
-    .split(';')
-    .map((s) =>
-      s
-        .split('\n')
-        .filter((line) => !line.trim().startsWith('--'))
-        .join('\n')
-        .trim(),
-    )
-    .filter((s) => s.length > 0);
-}
+import { migrator } from '../src/db/migrations';
 
 export class BetterSqliteAdapter implements SqliteAdapter {
   private readonly db: Database.Database;
@@ -38,10 +24,9 @@ export class BetterSqliteAdapter implements SqliteAdapter {
   async init(): Promise<void> {
     // 外键必须显式打开（SQLite 默认关闭）。
     this.db.pragma('foreign_keys = ON');
-    for (const stmt of splitStatements(DDL_V1)) {
-      this.db.exec(stmt);
-    }
-    this.db.pragma('user_version = 1');
+    // 跑真正的 migrator（user_version 0 -> 最新），与生产同一条迁移路径：
+    // 既让单测真实覆盖 v1->v2 迁移，又自动补齐 updated_at/deleted_at 列。
+    await migrator.migrateToLatest(this);
   }
 
   async run(sql: string, params: unknown[] = []): Promise<void> {

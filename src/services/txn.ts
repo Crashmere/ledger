@@ -8,6 +8,8 @@
 //   - 带 tagIds 的 create/update 在同一事务里维护 txn_tag（用 adapter.transaction）。
 //   - query 用参数化 SQL 拼 WHERE（禁止字符串插值用户输入）；tag 过滤走 txn_tag 子查询。
 //   - 列顺序坑：涉及 join 一律裸 SQL + 列别名，按列名映射（不依赖 drizzle proxy 的列顺序）。
+//   - 软删（v2）：remove 改为写 deleted_at；所有读（query/get/loadTagsFor）过滤 deleted_at IS NULL；
+//     所有写 bump updated_at（LWW 时间戳基建）。txn_tag 不独立版本化、跟随父 txn。
 // ============================================================
 
 import type { SqliteAdapter } from '../db/adapter';
@@ -23,6 +25,7 @@ import type {
 } from './contract';
 import { AppError } from './contract';
 import { rowToTag, rowToTxn, type TagRow, type TxnRow } from './internal';
+import { emitDataChanged } from './sync/bus';
 
 /** 计算出的交易有效值（create 直接用；update 由 existing + patch 合并得到）。 */
 interface TxnEffective {
@@ -43,6 +46,9 @@ export class TxnServiceImpl implements TxnService {
     const where: string[] = [];
     const params: unknown[] = [];
 
+    // 软删过滤：只返回未删交易。
+    where.push(`deleted_at IS NULL`);
+
     if (q.types && q.types.length > 0) {
       where.push(`type IN (${placeholders(q.types.length)})`);
       params.push(...q.types);
@@ -59,7 +65,10 @@ export class TxnServiceImpl implements TxnService {
     }
     if (q.tagIds && q.tagIds.length > 0) {
       where.push(
-        `id IN (SELECT txn_id FROM txn_tag WHERE tag_id IN (${placeholders(q.tagIds.length)}))`,
+        `id IN (SELECT tt.txn_id FROM txn_tag tt
+                  JOIN tag t ON t.id = tt.tag_id
+                 WHERE t.deleted_at IS NULL
+                   AND tt.tag_id IN (${placeholders(q.tagIds.length)}))`,
       );
       params.push(...q.tagIds);
     }
@@ -112,7 +121,7 @@ export class TxnServiceImpl implements TxnService {
   async get(id: Id): Promise<TxnWithTags | null> {
     const row = await this.adapter.get<TxnRow>(
       `SELECT id, type, amount, account_id, to_account_id, category_id, time, title, note, created_at
-         FROM txn WHERE id = ?`,
+         FROM txn WHERE id = ? AND deleted_at IS NULL`,
       [id],
     );
     if (!row) return null;
@@ -140,8 +149,8 @@ export class TxnServiceImpl implements TxnService {
     await this.adapter.transaction(async (tx) => {
       await tx.run(
         `INSERT INTO txn
-           (id, type, amount, account_id, to_account_id, category_id, time, title, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, type, amount, account_id, to_account_id, category_id, time, title, note, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
         [
           id,
           effective.type,
@@ -153,6 +162,7 @@ export class TxnServiceImpl implements TxnService {
           effective.title,
           effective.note,
           createdAt,
+          createdAt, // 新建：updated_at = created_at
         ],
       );
       for (const tagId of tagIds) {
@@ -160,6 +170,7 @@ export class TxnServiceImpl implements TxnService {
       }
     });
 
+    emitDataChanged();
     return {
       id,
       type: effective.type,
@@ -192,14 +203,15 @@ export class TxnServiceImpl implements TxnService {
       note: patch.note !== undefined ? patch.note : existing.note,
     };
     const effective = await this.validateAndNormalize(merged);
+    const updatedAt = Date.now();
 
     await this.adapter.transaction(async (tx) => {
       // 整表写有效值：把互相牵连的 type/to_account_id 一次性对齐，DB CHECK 不会踩空。
       await tx.run(
         `UPDATE txn
             SET type = ?, amount = ?, account_id = ?, to_account_id = ?,
-                category_id = ?, time = ?, title = ?, note = ?
-          WHERE id = ?`,
+                category_id = ?, time = ?, title = ?, note = ?, updated_at = ?
+          WHERE id = ? AND deleted_at IS NULL`,
         [
           effective.type,
           effective.amount,
@@ -209,6 +221,7 @@ export class TxnServiceImpl implements TxnService {
           effective.time,
           effective.title,
           effective.note,
+          updatedAt,
           id,
         ],
       );
@@ -222,6 +235,7 @@ export class TxnServiceImpl implements TxnService {
       }
     });
 
+    emitDataChanged();
     return {
       id,
       type: effective.type,
@@ -237,14 +251,20 @@ export class TxnServiceImpl implements TxnService {
   }
 
   async remove(id: Id): Promise<void> {
-    const existing = await this.adapter.get<{ id: string }>(`SELECT id FROM txn WHERE id = ?`, [
-      id,
-    ]);
+    const existing = await this.adapter.get<{ id: string }>(
+      `SELECT id FROM txn WHERE id = ? AND deleted_at IS NULL`,
+      [id],
+    );
     if (!existing) {
       throw new AppError('NOT_FOUND', `交易不存在：${id}`);
     }
-    // ON DELETE CASCADE 由 DB 清理 txn_tag。
-    await this.adapter.run(`DELETE FROM txn WHERE id = ?`, [id]);
+    // 软删：txn_tag 关联行保留（跟随父 txn 合并），读取时靠 deleted_at IS NULL 过滤。
+    const now = Date.now();
+    await this.adapter.run(
+      `UPDATE txn SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+      [now, now, id],
+    );
+    emitDataChanged();
   }
 
   // ----------------------------------------------------------
@@ -287,7 +307,7 @@ export class TxnServiceImpl implements TxnService {
 
     if (v.categoryId) {
       const cat = await this.adapter.get<{ account_id: string }>(
-        `SELECT account_id FROM category WHERE id = ?`,
+        `SELECT account_id FROM category WHERE id = ? AND deleted_at IS NULL`,
         [v.categoryId],
       );
       if (!cat) {
@@ -311,9 +331,10 @@ export class TxnServiceImpl implements TxnService {
   }
 
   private async assertAccountExists(accountId: Id): Promise<void> {
-    const row = await this.adapter.get<{ id: string }>(`SELECT id FROM account WHERE id = ?`, [
-      accountId,
-    ]);
+    const row = await this.adapter.get<{ id: string }>(
+      `SELECT id FROM account WHERE id = ? AND deleted_at IS NULL`,
+      [accountId],
+    );
     if (!row) {
       throw new AppError('VALIDATION', `账户不存在：${accountId}`);
     }
@@ -338,6 +359,7 @@ export class TxnServiceImpl implements TxnService {
          FROM txn_tag tt
          JOIN tag t ON t.id = tt.tag_id
         WHERE tt.txn_id IN (${placeholders(txnIds.length)})
+          AND t.deleted_at IS NULL
         ORDER BY t.order_num ASC`,
       txnIds,
     );

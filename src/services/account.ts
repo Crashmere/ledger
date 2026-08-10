@@ -3,7 +3,10 @@
 // ============================================================
 // 权威来源：06-接口契约.ts AccountService、S1 任务书 §四.1。
 //   - balance 用 SQL 聚合，不把全表拉进内存；转账双向计入（转入 +、转出 -）。
-//   - remove 依赖 DB 外键 RESTRICT，捕获后转 AppError('RESTRICT')。
+//     （只统计未软删的交易：WHERE deleted_at IS NULL。）
+//   - remove 改为软删（写 deleted_at）；软删后行仍在、DB 外键不再触发，
+//     故 RESTRICT 语义改由应用层查询"是否还有未删的子交易/分类"来保。
+//   - 所有写操作 bump updated_at（LWW 后写胜的时间戳基建）。
 //   - includeInBalance 领域层 boolean、存储层 0/1，读写各转一次。
 // 只依赖 SqliteAdapter / money.ts 类型，不 import Vue、不直接 import 驱动。
 // ============================================================
@@ -12,7 +15,8 @@ import type { SqliteAdapter } from '../db/adapter';
 import { getAdapter } from '../db/client';
 import type { Account, AccountDraft, AccountService, Cents, Id } from './contract';
 import { AppError } from './contract';
-import { isForeignKeyError, rowToAccount, type AccountRow } from './internal';
+import { rowToAccount, type AccountRow } from './internal';
+import { emitDataChanged } from './sync/bus';
 
 export class AccountServiceImpl implements AccountService {
   constructor(private readonly adapter: SqliteAdapter = getAdapter()) {}
@@ -21,6 +25,7 @@ export class AccountServiceImpl implements AccountService {
     const rows = await this.adapter.all<AccountRow>(
       `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at
          FROM account
+        WHERE deleted_at IS NULL
         ORDER BY order_num ASC`,
     );
     return rows.map(rowToAccount);
@@ -29,7 +34,7 @@ export class AccountServiceImpl implements AccountService {
   async get(id: Id): Promise<Account | null> {
     const row = await this.adapter.get<AccountRow>(
       `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at
-         FROM account WHERE id = ?`,
+         FROM account WHERE id = ? AND deleted_at IS NULL`,
       [id],
     );
     return row ? rowToAccount(row) : null;
@@ -48,8 +53,8 @@ export class AccountServiceImpl implements AccountService {
 
     await this.adapter.run(
       `INSERT INTO account
-         (id, name, color, icon, initial_balance, include_in_balance, order_num, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, name, color, icon, initial_balance, include_in_balance, order_num, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       [
         id,
         draft.name,
@@ -59,9 +64,11 @@ export class AccountServiceImpl implements AccountService {
         includeInBalance ? 1 : 0,
         orderNum,
         createdAt,
+        createdAt, // 新建：updated_at = created_at
       ],
     );
 
+    emitDataChanged();
     return {
       id,
       name: draft.name,
@@ -110,15 +117,21 @@ export class AccountServiceImpl implements AccountService {
       params.push(patch.orderNum);
     }
 
-    if (sets.length > 0) {
-      params.push(id);
-      await this.adapter.run(`UPDATE account SET ${sets.join(', ')} WHERE id = ?`, params);
-    }
+    // 无论改了哪些字段，只要调用 update 就 bump updated_at（LWW 时间戳）。
+    sets.push('updated_at = ?');
+    params.push(Date.now());
+
+    params.push(id);
+    await this.adapter.run(
+      `UPDATE account SET ${sets.join(', ')} WHERE id = ? AND deleted_at IS NULL`,
+      params,
+    );
 
     const updated = await this.get(id);
     if (!updated) {
       throw new AppError('NOT_FOUND', `账户不存在：${id}`);
     }
+    emitDataChanged();
     return updated;
   }
 
@@ -127,22 +140,40 @@ export class AccountServiceImpl implements AccountService {
     if (!existing) {
       throw new AppError('NOT_FOUND', `账户不存在：${id}`);
     }
-    try {
-      await this.adapter.run(`DELETE FROM account WHERE id = ?`, [id]);
-    } catch (err) {
-      if (isForeignKeyError(err)) {
-        throw new AppError('RESTRICT', '该账户下仍有交易或分类，请先处理后再删除');
-      }
-      throw err;
+    // 软删后行仍在，DB 外键不会再触发 RESTRICT；改由应用层校验：
+    // 该账户下是否还有"未软删"的子交易 / 分类。任一存在则拒删。
+    const child = await this.adapter.get<{ cnt: number }>(
+      `SELECT
+         (SELECT COUNT(*) FROM txn
+           WHERE deleted_at IS NULL AND (account_id = ? OR to_account_id = ?))
+       + (SELECT COUNT(*) FROM category
+           WHERE deleted_at IS NULL AND account_id = ?)
+         AS cnt`,
+      [id, id, id],
+    );
+    if ((child?.cnt ?? 0) > 0) {
+      throw new AppError('RESTRICT', '该账户下仍有交易或分类，请先处理后再删除');
     }
+    const now = Date.now();
+    await this.adapter.run(
+      `UPDATE account SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+      [now, now, id],
+    );
+    emitDataChanged();
   }
 
   async reorder(orderedIds: Id[]): Promise<void> {
+    const now = Date.now();
     await this.adapter.transaction(async (tx) => {
       for (let i = 0; i < orderedIds.length; i += 1) {
-        await tx.run(`UPDATE account SET order_num = ? WHERE id = ?`, [i, orderedIds[i]]);
+        await tx.run(`UPDATE account SET order_num = ?, updated_at = ? WHERE id = ?`, [
+          i,
+          now,
+          orderedIds[i],
+        ]);
       }
     });
+    emitDataChanged();
   }
 
   /**
@@ -159,10 +190,10 @@ export class AccountServiceImpl implements AccountService {
     const row = await this.adapter.get<{ balance: number }>(
       `SELECT
          ?
-         + COALESCE((SELECT SUM(amount) FROM txn WHERE type = 'income'  AND account_id    = ?), 0)
-         - COALESCE((SELECT SUM(amount) FROM txn WHERE type = 'expense' AND account_id    = ?), 0)
-         + COALESCE((SELECT SUM(amount) FROM txn WHERE type = 'transfer' AND to_account_id = ?), 0)
-         - COALESCE((SELECT SUM(amount) FROM txn WHERE type = 'transfer' AND account_id    = ?), 0)
+         + COALESCE((SELECT SUM(amount) FROM txn WHERE deleted_at IS NULL AND type = 'income'  AND account_id    = ?), 0)
+         - COALESCE((SELECT SUM(amount) FROM txn WHERE deleted_at IS NULL AND type = 'expense' AND account_id    = ?), 0)
+         + COALESCE((SELECT SUM(amount) FROM txn WHERE deleted_at IS NULL AND type = 'transfer' AND to_account_id = ?), 0)
+         - COALESCE((SELECT SUM(amount) FROM txn WHERE deleted_at IS NULL AND type = 'transfer' AND account_id    = ?), 0)
          AS balance`,
       [account.initialBalance, id, id, id, id],
     );

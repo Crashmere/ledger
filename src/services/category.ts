@@ -2,9 +2,12 @@
 // category.ts —— CategoryService 实现（implements 06 契约）
 // ============================================================
 // 权威来源：06-接口契约.ts CategoryService、S1 任务书 §四.2、红线 §三.1。
-//   - listByAccount 只返回该账户下的分类（红线：分类归属账户），按 order_num 排。
+//   - listByAccount 只返回该账户下"未软删"的分类，按 order_num 排。
 //   - create 校验 accountId 必填且账户存在，否则 VALIDATION。
-//   - remove 依赖 DB 的 ON DELETE SET NULL：删后其交易 category_id 变 NULL、交易保留。
+//   - remove 改为软删（写 deleted_at）。原 DB 的 ON DELETE SET NULL 不再触发，
+//     故在同事务里把引用它的"未软删"交易 category_id 置 NULL 并 bump 其 updated_at，
+//     保持"删分类后其交易仍在、categoryId 变 null"的既有语义。
+//   - 所有写操作 bump updated_at（LWW 时间戳基建）。
 // ============================================================
 
 import type { SqliteAdapter } from '../db/adapter';
@@ -12,6 +15,7 @@ import { getAdapter } from '../db/client';
 import type { Category, CategoryDraft, CategoryService, Id } from './contract';
 import { AppError } from './contract';
 import { rowToCategory, type CategoryRow } from './internal';
+import { emitDataChanged } from './sync/bus';
 
 export class CategoryServiceImpl implements CategoryService {
   constructor(private readonly adapter: SqliteAdapter = getAdapter()) {}
@@ -20,7 +24,7 @@ export class CategoryServiceImpl implements CategoryService {
     const rows = await this.adapter.all<CategoryRow>(
       `SELECT id, account_id, name, color, icon, order_num, created_at
          FROM category
-        WHERE account_id = ?
+        WHERE account_id = ? AND deleted_at IS NULL
         ORDER BY order_num ASC`,
       [accountId],
     );
@@ -30,7 +34,7 @@ export class CategoryServiceImpl implements CategoryService {
   async get(id: Id): Promise<Category | null> {
     const row = await this.adapter.get<CategoryRow>(
       `SELECT id, account_id, name, color, icon, order_num, created_at
-         FROM category WHERE id = ?`,
+         FROM category WHERE id = ? AND deleted_at IS NULL`,
       [id],
     );
     return row ? rowToCategory(row) : null;
@@ -50,11 +54,13 @@ export class CategoryServiceImpl implements CategoryService {
     const orderNum = draft.orderNum ?? (await this.nextOrderNum(draft.accountId));
 
     await this.adapter.run(
-      `INSERT INTO category (id, account_id, name, color, icon, order_num, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, draft.accountId, draft.name, draft.color, draft.icon ?? null, orderNum, createdAt],
+      `INSERT INTO category
+         (id, account_id, name, color, icon, order_num, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [id, draft.accountId, draft.name, draft.color, draft.icon ?? null, orderNum, createdAt, createdAt],
     );
 
+    emitDataChanged();
     return {
       id,
       accountId: draft.accountId,
@@ -101,15 +107,21 @@ export class CategoryServiceImpl implements CategoryService {
       params.push(patch.orderNum);
     }
 
-    if (sets.length > 0) {
-      params.push(id);
-      await this.adapter.run(`UPDATE category SET ${sets.join(', ')} WHERE id = ?`, params);
-    }
+    // 只要调用 update 就 bump updated_at（LWW 时间戳）。
+    sets.push('updated_at = ?');
+    params.push(Date.now());
+
+    params.push(id);
+    await this.adapter.run(
+      `UPDATE category SET ${sets.join(', ')} WHERE id = ? AND deleted_at IS NULL`,
+      params,
+    );
 
     const updated = await this.get(id);
     if (!updated) {
       throw new AppError('NOT_FOUND', `分类不存在：${id}`);
     }
+    emitDataChanged();
     return updated;
   }
 
@@ -118,26 +130,41 @@ export class CategoryServiceImpl implements CategoryService {
     if (!existing) {
       throw new AppError('NOT_FOUND', `分类不存在：${id}`);
     }
-    // ON DELETE SET NULL 由 DB 处理：其交易的 category_id 自动置 NULL，交易保留。
-    await this.adapter.run(`DELETE FROM category WHERE id = ?`, [id]);
+    // 软删分类，并模拟原 ON DELETE SET NULL：把引用它的"未软删"交易 category_id
+    // 置 NULL，同时 bump 那些交易的 updated_at（让它们参与后续合并）。
+    const now = Date.now();
+    await this.adapter.transaction(async (tx) => {
+      await tx.run(
+        `UPDATE txn SET category_id = NULL, updated_at = ?
+          WHERE category_id = ? AND deleted_at IS NULL`,
+        [now, id],
+      );
+      await tx.run(
+        `UPDATE category SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+        [now, now, id],
+      );
+    });
+    emitDataChanged();
   }
 
   async reorder(accountId: Id, orderedIds: Id[]): Promise<void> {
+    const now = Date.now();
     await this.adapter.transaction(async (tx) => {
       for (let i = 0; i < orderedIds.length; i += 1) {
-        await tx.run(`UPDATE category SET order_num = ? WHERE id = ? AND account_id = ?`, [
-          i,
-          orderedIds[i],
-          accountId,
-        ]);
+        await tx.run(
+          `UPDATE category SET order_num = ?, updated_at = ? WHERE id = ? AND account_id = ?`,
+          [i, now, orderedIds[i], accountId],
+        );
       }
     });
+    emitDataChanged();
   }
 
   private async assertAccountExists(accountId: Id): Promise<void> {
-    const row = await this.adapter.get<{ id: string }>(`SELECT id FROM account WHERE id = ?`, [
-      accountId,
-    ]);
+    const row = await this.adapter.get<{ id: string }>(
+      `SELECT id FROM account WHERE id = ? AND deleted_at IS NULL`,
+      [accountId],
+    );
     if (!row) {
       throw new AppError('VALIDATION', `账户不存在：${accountId}`);
     }

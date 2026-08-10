@@ -8,6 +8,7 @@
 import type { Migrator, SqliteAdapter } from '../adapter';
 import { SCHEMA_VERSION } from '../schema';
 import { DDL_V1 } from './ddl_v1';
+import { DDL_V2 } from './ddl_v2';
 
 /** 逐条拆分 DDL 脚本为独立语句（adapter.run 一次执行一条）。 */
 function splitStatements(script: string): string[] {
@@ -39,6 +40,17 @@ export const migrator: Migrator = {
         }
       });
       await db.setUserVersion(1);
+    }
+
+    // v1 -> v2：加 updated_at / deleted_at（记录级同步基建）+ 回填 + 索引。
+    // 同样整体入事务，失败回滚；ADD COLUMN / UPDATE / CREATE INDEX 均可在事务内执行。
+    if (current < 2) {
+      await db.transaction(async (tx) => {
+        for (const stmt of splitStatements(DDL_V2)) {
+          await tx.run(stmt);
+        }
+      });
+      await db.setUserVersion(2);
     }
   },
 };
