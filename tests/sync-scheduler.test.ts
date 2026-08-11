@@ -88,4 +88,33 @@ describe('自动同步调度器', () => {
 
     handle.stop();
   });
+
+  it('onResult 拿到同步结果（供页面顶部提示）', async () => {
+    const trigger = vi.fn().mockResolvedValue({ status: 'pushed' });
+    const onResult = vi.fn();
+    const handle = createAutoSync({ debounceMs: 1000, trigger, onResult });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(1000);
+    await vi.runAllTimersAsync(); // 冲掉 trigger 的 resolved 微任务
+
+    expect(onResult).toHaveBeenCalledTimes(1);
+    expect(onResult).toHaveBeenCalledWith({ status: 'pushed' });
+    handle.stop();
+  });
+
+  it('trigger 失败时走 onError，且回调抛错不冒泡', async () => {
+    const trigger = vi.fn().mockRejectedValue(new Error('boom'));
+    const onError = vi.fn(() => {
+      throw new Error('提示回调自身也炸了'); // 必须被吞
+    });
+    const handle = createAutoSync({ debounceMs: 1000, trigger, onError });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(1000);
+    await expect(vi.runAllTimersAsync()).resolves.not.toThrow();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    handle.stop();
+  });
 });

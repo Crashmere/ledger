@@ -29,6 +29,13 @@ export interface AutoSyncOptions {
   debounceMs?: number;
   /** 触发时执行的同步动作（默认 syncNow）。测试可注入桩。 */
   trigger?: () => Promise<unknown>;
+  /**
+   * 每次自动同步跑完后回调（拿到 trigger 的解析值，通常是 SyncResult）。
+   * 供 main.ts 把结果转成页面顶部提示。回调内自身抛错会被吞掉，不影响同步。
+   */
+  onResult?: (result: unknown) => void;
+  /** trigger 抛错 / rejected 时回调（供提示"同步失败"）。回调抛错同样被吞。 */
+  onError?: (err: unknown) => void;
 }
 
 let singleton: AutoSyncHandle | null = null;
@@ -55,22 +62,42 @@ export function stopAutoSync(): void {
 export function createAutoSync(opts: AutoSyncOptions = {}): AutoSyncHandle {
   const debounceMs = opts.debounceMs ?? AUTO_SYNC_DEBOUNCE_MS;
   const trigger = opts.trigger ?? syncNow;
+  const onResult = opts.onResult;
+  const onError = opts.onError;
 
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const fire = (): void => {
     timer = null;
     // 同步调用 trigger；无论它同步抛错还是返回 rejected Promise 都吞掉
-    // （离线记账不受同步失败影响）。
+    // （离线记账不受同步失败影响）。有 onResult/onError 时把结果透出去做提示，
+    // 但回调自身抛错也一并吞掉，绝不反过来打断同步。
+    const notifyResult = (r: unknown): void => {
+      if (!onResult) return;
+      try {
+        onResult(r);
+      } catch {
+        /* swallow：提示回调出错不影响同步 */
+      }
+    };
+    const notifyError = (e: unknown): void => {
+      if (!onError) return;
+      try {
+        onError(e);
+      } catch {
+        /* swallow */
+      }
+    };
     try {
       const p = trigger();
-      if (p && typeof (p as Promise<unknown>).catch === 'function') {
-        (p as Promise<unknown>).catch(() => {
-          /* swallow：网络/远端错误不打断用户 */
-        });
+      if (p && typeof (p as Promise<unknown>).then === 'function') {
+        (p as Promise<unknown>).then(notifyResult, notifyError);
+      } else {
+        notifyResult(p);
       }
-    } catch {
-      /* swallow：trigger 同步抛错也不冒泡 */
+    } catch (e) {
+      // trigger 同步抛错也不冒泡，转成 onError 提示。
+      notifyError(e);
     }
   };
 

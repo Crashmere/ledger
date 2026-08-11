@@ -11,6 +11,7 @@
 // ============================================================
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import ToastHost from './components/ToastHost.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -46,6 +47,8 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
 
 <template>
   <div class="app" :class="{ 'app-add-mode': isAddRoute }">
+    <!-- 全局提示宿主：自动同步结果等从页面顶部弹出小框（类 element-plus alert）。 -->
+    <ToastHost />
     <!-- 侧栏 -->
     <aside class="sidebar">
       <div class="brand">

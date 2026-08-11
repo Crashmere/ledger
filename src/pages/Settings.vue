@@ -288,6 +288,7 @@ async function loadCfgIntoForm(): Promise<void> {
   };
   tokenConfigured.value = await hasToken();
   lastSyncAt.value = await getLastSyncAt();
+  nowSnapshot.value = Date.now(); // 刷新「xx之前」的基准（打开设置页时更新一次）
 }
 
 /** 配置是否完整到可以发请求（仓库来自内置常量，故只需 token 已存或本次已输入）。 */
@@ -364,6 +365,28 @@ function fmtTime(ms: number | null): string {
 
 const lastSyncText = computed(() => fmtTime(lastSyncAt.value));
 
+// 「xx之前」相对时间：以 nowSnapshot 为基准算，打开设置页时刷新一次
+// （见 loadCfgIntoForm），手动同步成功后也刷新，故点开时总是最新。
+const nowSnapshot = ref<number>(Date.now());
+
+/** 把「上次同步距 now」格式化成「刚刚 / xx 秒 / 分钟 / 小时 / 天之前」。 */
+function relativeFromNow(ms: number | null, now: number): string {
+  if (!ms) return '';
+  const diff = now - ms;
+  if (diff < 0) return '刚刚';
+  const sec = Math.floor(diff / 1000);
+  if (sec < 10) return '刚刚';
+  if (sec < 60) return `${sec} 秒之前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟之前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时之前`;
+  const day = Math.floor(hr / 24);
+  return `${day} 天之前`;
+}
+
+const lastSyncRelative = computed(() => relativeFromNow(lastSyncAt.value, nowSnapshot.value));
+
 const syncing = ref(false);
 const syncMsg = ref(''); // 成功文案
 const syncError = ref(''); // 失败文案
@@ -437,6 +460,7 @@ async function doSync(): Promise<void> {
     syncReport.value = res.report ?? null;
     syncChanged.value = changed;
     if (res.at) lastSyncAt.value = res.at;
+    nowSnapshot.value = Date.now(); // 手动同步后刷新「xx之前」基准
   } catch (e) {
     syncError.value = friendlyError(e);
   } finally {
@@ -1032,7 +1056,10 @@ onMounted(() => {
 
           <div class="dl" style="margin-bottom: 14px">
             <span class="dl-k">上次同步</span>
-            <span class="dl-v num">{{ lastSyncText }}</span>
+            <span class="dl-v num">
+              {{ lastSyncText }}
+              <span v-if="lastSyncRelative" class="sync-rel">（{{ lastSyncRelative }}）</span>
+            </span>
           </div>
 
           <div class="row gap-3 wrap">
@@ -1436,6 +1463,12 @@ onMounted(() => {
 .alert.success {
   background: var(--income-soft);
   color: var(--income);
+}
+
+/* 「上次同步」后面的相对时间描述（xx 之前），弱化为次要信息。 */
+.sync-rel {
+  color: var(--fg-3);
+  font-weight: 400;
 }
 
 /* 迷你统计卡（预览/汇总三格） */
