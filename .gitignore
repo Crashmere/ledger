@@ -30,3 +30,7 @@ secrets.*
 # 详细产品、架构、运维、状态与决策保存在此目录，不进入公开仓库。
 # 根目录 AGENTS.md 是唯一跟踪的项目开发文档。
 /.project-docs/
+
+# 测试夹具：真实旧应用备份（含个人财务数据），不进入公开仓库。
+# import/backup 测试在该文件缺失时自动跳过（见 tests/fixtures/legacyBackup.ts）。
+/tests/fixtures/legacy-backup.json

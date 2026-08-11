@@ -1,20 +1,20 @@
 // ============================================================
-// backup.test.ts —— S8 云备份单测（Vitest + Node 内存库）
+// backup.test.ts —— 云备份单测（Vitest + Node 内存库）
 // ============================================================
-// 覆盖 S8 任务书 §六 DoD 关键项：
+// 覆盖导出/恢复关键项：
 //   - 往返一致性：导出快照 → 恢复 → 各表条数与内容一致，金额（整数分）无漂移。
 //   - setting 过滤：导出快照剔除 sync.github.*（Token 等凭据不进备份）。
 //   - 配置保全：恢复后本机 sync.github.* 依然在（setting 只 UPSERT，绝不清表）。
 //   - base64 UTF-8 往返（含中文）。
 //   - 校验：app/formatVersion/dbUserVersion 不符时拒绝、不写库。
-// 复用真实备份 JSON 建库（4/16/468），保证与生产数据同形。
+// 复用真实备份 JSON 建库，保证与生产数据同形；业务表期望条数从夹具推导（不硬编码）。
+// 夹具 tests/fixtures/legacy-backup.json 含个人数据、被 .gitignore 忽略，
+// 缺失时整组 describe.skip（见 tests/fixtures/legacyBackup.ts）。
 // ============================================================
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { BetterSqliteAdapter, makeTestAdapter } from './better-sqlite-adapter';
-import { importLegacyBackup, persistImport, type LegacyBackup } from '../src/services/import/legacyBackup';
+import { importLegacyBackup, persistImport } from '../src/services/import/legacyBackup';
 import {
   exportSnapshot,
   serializeSnapshot,
@@ -25,12 +25,17 @@ import {
 } from '../src/services/backup/snapshot';
 import { utf8ToBase64, base64ToUtf8 } from '../src/services/backup/github';
 import { SYNC_KEYS, isSyncKey } from '../src/services/backup/keys';
+import { loadLegacyBackup } from './fixtures/legacyBackup';
 
-const BACKUP_PATH = fileURLToPath(
-  new URL('../新记账系统-交接资料/参考数据-旧应用真实备份.json', import.meta.url),
-);
-const backup = JSON.parse(readFileSync(BACKUP_PATH, 'utf-8')) as LegacyBackup;
+// 真实备份含个人数据、被 .gitignore 忽略；缺失时跳过依赖它的组，不崩溃。
+const backup = loadLegacyBackup();
+const describeWithFixture = backup ? describe : describe.skip;
 const NOW = 1_754_700_000_000;
+
+// 业务表期望条数从原始备份推导，随夹具版本自适应。
+const rawAccounts = backup?.accounts?.length ?? 0;
+const rawCategories = backup?.categories?.length ?? 0;
+const rawTxnCount = backup?.transactions?.length ?? 0;
 
 /** COUNT(*) 小工具。 */
 async function count(adapter: BetterSqliteAdapter, table: string): Promise<number> {
@@ -41,7 +46,7 @@ async function count(adapter: BetterSqliteAdapter, table: string): Promise<numbe
 /** 建一个已导入真实数据、并带若干 setting（含 sync.github.*）的库。 */
 async function seededAdapter(): Promise<BetterSqliteAdapter> {
   const adapter = await makeTestAdapter();
-  const r = importLegacyBackup(backup, NOW);
+  const r = importLegacyBackup(backup!, NOW);
   await persistImport(adapter, r, { mode: 'replace' });
   // 造几个标签与关联，覆盖 tag/txn_tag 往返。
   await adapter.run(`INSERT INTO tag(id,name,color,icon,order_num,created_at) VALUES(?,?,?,?,?,?)`, [
@@ -62,7 +67,7 @@ async function seededAdapter(): Promise<BetterSqliteAdapter> {
   return adapter;
 }
 
-describe('exportSnapshot（导出快照）', () => {
+describeWithFixture('exportSnapshot（导出快照）', () => {
   let adapter: BetterSqliteAdapter;
   beforeEach(async () => {
     adapter = await seededAdapter();
@@ -72,9 +77,9 @@ describe('exportSnapshot（导出快照）', () => {
   it('覆盖 6 张表，业务表条数与库一致', async () => {
     const snap = await exportSnapshot(adapter);
     const c = snapshotCounts(snap);
-    expect(c.account).toBe(4);
-    expect(c.category).toBe(16);
-    expect(c.txn).toBe(468);
+    expect(c.account).toBe(rawAccounts);
+    expect(c.category).toBe(rawCategories);
+    expect(c.txn).toBe(rawTxnCount);
     expect(c.tag).toBe(1);
     expect(c.txn_tag).toBe(1);
     expect(snap.app).toBe('ivy-wallet');
@@ -96,7 +101,7 @@ describe('exportSnapshot（导出快照）', () => {
   });
 });
 
-describe('往返一致性（导出 → 恢复 → 计数与内容一致）', () => {
+describeWithFixture('往返一致性（导出 → 恢复 → 计数与内容一致）', () => {
   let src: BetterSqliteAdapter;
   let dst: BetterSqliteAdapter;
   beforeEach(async () => {
@@ -111,9 +116,9 @@ describe('往返一致性（导出 → 恢复 → 计数与内容一致）', () 
   it('恢复到空库后各表条数一致', async () => {
     const snap = await exportSnapshot(src);
     await restoreSnapshot(dst, snap);
-    expect(await count(dst, 'account')).toBe(4);
-    expect(await count(dst, 'category')).toBe(16);
-    expect(await count(dst, 'txn')).toBe(468);
+    expect(await count(dst, 'account')).toBe(rawAccounts);
+    expect(await count(dst, 'category')).toBe(rawCategories);
+    expect(await count(dst, 'txn')).toBe(rawTxnCount);
     expect(await count(dst, 'tag')).toBe(1);
     expect(await count(dst, 'txn_tag')).toBe(1);
   });
@@ -135,15 +140,15 @@ describe('往返一致性（导出 → 恢复 → 计数与内容一致）', () 
   it('恢复对已有数据的库也稳定（先清空再写回，不叠加）', async () => {
     const snap = await exportSnapshot(src);
     // dst 先塞入一份别的数据，再恢复，应被完全覆盖为快照内容。
-    const r = importLegacyBackup(backup, NOW);
+    const r = importLegacyBackup(backup!, NOW);
     await persistImport(dst, r, { mode: 'replace' });
     await restoreSnapshot(dst, snap);
-    expect(await count(dst, 'account')).toBe(4);
-    expect(await count(dst, 'txn')).toBe(468);
+    expect(await count(dst, 'account')).toBe(rawAccounts);
+    expect(await count(dst, 'txn')).toBe(rawTxnCount);
   });
 });
 
-describe('配置保全（恢复不覆盖本机 sync.github.*）', () => {
+describeWithFixture('配置保全（恢复不覆盖本机 sync.github.*）', () => {
   it('恢复后本机 owner/repo/token 依然在，且被恢复的业务 setting 生效', async () => {
     const src = await seededAdapter();
     const dst = await makeTestAdapter();
@@ -184,14 +189,14 @@ describe('base64 UTF-8 往返（含中文）', () => {
     expect(base64ToUtf8(withNewlines)).toBe(s);
   });
 
-  it('整份快照 JSON 经 base64 往返后可再次解析', async () => {
+  it.skipIf(!backup)('整份快照 JSON 经 base64 往返后可再次解析', async () => {
     const adapter = await seededAdapter();
     const snap = await exportSnapshot(adapter);
     const text = serializeSnapshot(snap);
     const round = base64ToUtf8(utf8ToBase64(text));
     const parsed = parseSnapshot(round, 2);
     expect(parsed.ok).toBe(true);
-    expect(snapshotCounts(parsed.snapshot!).txn).toBe(468);
+    expect(snapshotCounts(parsed.snapshot!).txn).toBe(rawTxnCount);
     adapter.close();
   });
 });
@@ -230,10 +235,19 @@ describe('校验（非法快照拒绝，不写库）', () => {
 
   it('恢复失败整体回滚（写回中途约束冲突不留脏数据）', async () => {
     const dst = await makeTestAdapter();
-    // 先放入一份正常数据。
-    const r = importLegacyBackup(backup, NOW);
-    await persistImport(dst, r, { mode: 'replace' });
+    // 先放入一份正常数据（合成，不依赖真实夹具）：1 账户 + 1 交易。
+    await dst.run(
+      `INSERT INTO account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at)
+       VALUES('a1','A',1,NULL,0,1,0,?,?,NULL)`,
+      [NOW, NOW],
+    );
+    await dst.run(
+      `INSERT INTO txn(id,type,amount,account_id,to_account_id,category_id,time,title,note,created_at,updated_at,deleted_at)
+       VALUES('t1','expense',100,'a1',NULL,NULL,?,NULL,NULL,?,?,NULL)`,
+      [NOW, NOW, NOW],
+    );
     const before = await count(dst, 'txn');
+    expect(before).toBe(1);
 
     // 构造非法快照：category 引用不存在的 account（触发外键失败）。
     const badSnap = {
