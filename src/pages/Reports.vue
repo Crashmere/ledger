@@ -126,17 +126,8 @@ const selectedCategoryNames = ref<string[]>([]); // 展示层按名去重
 const selectedTagIds = ref<Id[]>([]);
 const amountMinCents = ref<number | null>(null);
 const amountMaxCents = ref<number | null>(null);
-const keyword = ref<string>('');
 
-// 排序（作用于分类明细排行；§六.8）
-type SortSel = 'amount-desc' | 'amount-asc' | 'time-desc' | 'time-asc';
-const sortSel = ref<SortSel>('amount-desc');
-const SORT_OPTS: ReadonlyArray<{ v: SortSel; label: string }> = [
-  { v: 'amount-desc', label: '金额（高→低）' },
-  { v: 'amount-asc', label: '金额（低→高）' },
-  { v: 'time-desc', label: '时间（新→旧）' },
-  { v: 'time-asc', label: '时间（旧→新）' },
-];
+// 报告页固定按金额降序展示分类明细（其余排序在报告页无实际用途，已迁至搜索页）。
 
 // 饼图方向（默认看支出分布；小切换看收入）
 const pieDir = ref<Extract<TxnType, 'income' | 'expense'>>('expense');
@@ -195,8 +186,9 @@ const activeQuery = computed<TxnQuery>(() => {
   const q: TxnQuery = {
     timeFrom: timeFrom.value,
     timeTo: timeTo.value,
-    sortBy: sortSel.value.startsWith('amount') ? 'amount' : 'time',
-    sortDir: sortSel.value.endsWith('asc') ? 'asc' : 'desc',
+    // 报告页固定金额降序（分类明细排行按金额高→低），查询排序不影响 TS 派生的分组结果。
+    sortBy: 'amount',
+    sortDir: 'desc',
   };
   if (selectedTypes.value.length > 0) q.types = [...selectedTypes.value];
   if (selectedAccountIds.value.length > 0) q.accountIds = [...selectedAccountIds.value];
@@ -205,7 +197,6 @@ const activeQuery = computed<TxnQuery>(() => {
   if (selectedTagIds.value.length > 0) q.tagIds = [...selectedTagIds.value];
   if (amountMinCents.value !== null) q.amountMin = amountMinCents.value;
   if (amountMaxCents.value !== null) q.amountMax = amountMaxCents.value;
-  if (keyword.value.trim()) q.keyword = keyword.value.trim();
   return q;
 });
 
@@ -296,18 +287,8 @@ const donutStyle = computed<Record<string, string>>(() => {
   return { background: `conic-gradient(${stops.join(', ')})` };
 });
 
-/** 分类明细排行：与饼图同组，但按当前排序选项重排。 */
-const rankRows = computed<BreakdownRow[]>(() => {
-  const rows = [...pieGroups.value];
-  const asc = sortSel.value.endsWith('asc');
-  const byTime = sortSel.value.startsWith('time');
-  rows.sort((a, b) => {
-    const av = byTime ? a.latest : a.amount;
-    const bv = byTime ? b.latest : b.amount;
-    return asc ? av - bv : bv - av;
-  });
-  return rows;
-});
+/** 分类明细排行：与饼图同组，固定按金额降序（pieGroups 已按金额降序，直接复用）。 */
+const rankRows = computed<BreakdownRow[]>(() => pieGroups.value);
 const rankMax = computed<number>(() => rankRows.value.reduce((m, r) => Math.max(m, r.amount), 0));
 
 /** 趋势点：按本地时区分桶（复用 stats.ts 的 bucketOf），bucket 升序。 */
@@ -449,8 +430,7 @@ const hasAnyFilter = computed(
     selectedAccountIds.value.length > 0 ||
     selectedCategoryNames.value.length > 0 ||
     selectedTagIds.value.length > 0 ||
-    hasAmountChip.value ||
-    keyword.value.trim().length > 0,
+    hasAmountChip.value,
 );
 function clearAll(): void {
   selectedTypes.value = [];
@@ -458,13 +438,12 @@ function clearAll(): void {
   selectedCategoryNames.value = [];
   selectedTagIds.value = [];
   clearAmount();
-  keyword.value = '';
 }
 </script>
 
 <template>
   <div class="content reports">
-    <!-- 顶部：时间范围选择器 + 关键词 -->
+    <!-- 顶部：时间范围选择器 -->
     <div class="rep-head">
       <div class="range-tabs">
         <button
@@ -483,18 +462,11 @@ function clearAll(): void {
         <input type="date" class="input date-input" v-model="customTo" aria-label="结束日期" />
       </div>
       <span class="faint range-label num">{{ rangeLabel }}</span>
-      <div class="topbar-search rep-search">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m21 21-4-4" />
-        </svg>
-        <input v-model="keyword" placeholder="搜索标题 / 备注…" />
-      </div>
     </div>
 
-    <!-- 逐步筛选区（chips）+ 排序 -->
+    <!-- 逐步筛选区（chips） -->
     <div class="card card-pad" style="padding: 14px 16px">
-      <div class="row wrap gap-2" style="justify-content: space-between">
+      <div class="row wrap gap-2">
         <div class="row wrap gap-2">
           <span class="faint" style="font-size: 12px; font-weight: 600; margin-right: 2px">逐步筛选</span>
 
@@ -612,15 +584,6 @@ function clearAll(): void {
           >
             清空
           </span>
-        </div>
-
-        <div class="row gap-2">
-          <label class="pill pill-active">
-            <span class="p-key">排序</span>
-            <select v-model="sortSel" class="sort-select">
-              <option v-for="o in SORT_OPTS" :key="o.v" :value="o.v">{{ o.label }}</option>
-            </select>
-          </label>
         </div>
       </div>
     </div>
@@ -740,7 +703,7 @@ function clearAll(): void {
     <div class="card mt-4">
       <div class="card-head">
         <h3>分类明细（跨账户按分类名合并）</h3>
-        <span class="faint" style="font-size: 13px">{{ SORT_OPTS.find((o) => o.v === sortSel)?.label }}</span>
+        <span class="faint" style="font-size: 13px">金额（高→低）</span>
       </div>
       <div class="card-pad">
         <div v-if="rankRows.length === 0" class="empty">
@@ -804,19 +767,6 @@ function clearAll(): void {
 }
 .range-label {
   font-size: var(--fs-sm);
-}
-.rep-search {
-  margin-left: auto;
-}
-
-/* 排序下拉（嵌在 pill 里的原生 select，去边框透明化） */
-.sort-select {
-  background: none;
-  border: none;
-  outline: none;
-  font-weight: 600;
-  color: var(--primary);
-  cursor: pointer;
 }
 
 /* 饼图方向小切换 */
@@ -1009,13 +959,9 @@ function clearAll(): void {
     grid-template-columns: 1fr;
   }
 
-  /* 顶部范围选择行：允许换行、搜索框铺满不再靠右挤压 */
+  /* 顶部范围选择行：允许换行 */
   .rep-head {
     gap: 10px;
-  }
-  .rep-search {
-    margin-left: 0;
-    width: 100%;
   }
 
   /* 饼图行：环 + 图例竖排，图例不溢出 */

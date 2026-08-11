@@ -256,14 +256,14 @@ function txnAmountClass(t: TxnWithTags): string {
 
 <template>
   <div class="content">
-    <!-- 顶部：月份切换 -->
-    <div class="ov-head">
+    <!-- 月份切换：投放到顶栏（与页标题同高、右对齐），页内不再单独占一行。 -->
+    <Teleport to="#topbar-slot">
       <div class="month-switch">
         <button aria-label="上一月" @click="prevMonth">‹</button>
         <span class="m-label">{{ monthLabel }}</span>
         <button aria-label="下一月" :disabled="atCurrentMonth" @click="nextMonth">›</button>
       </div>
-    </div>
+    </Teleport>
 
     <!-- 汇总三卡 -->
     <div class="grid g-3">
@@ -425,13 +425,6 @@ function txnAmountClass(t: TxnWithTags): string {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* 顶部月份切换行 */
-.ov-head {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 16px;
 }
 
 /* 概览双栏：左流水自适应、右侧固定 360px（对照设计稿桌面双栏）。 */

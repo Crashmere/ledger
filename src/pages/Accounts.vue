@@ -545,11 +545,13 @@ function txnAmountClass(t: TxnWithTags): string {
 
 <template>
   <div class="content acc-content">
-    <!-- 顶部：账户 / 标签 次级 tab -->
-    <div class="subtabs">
-      <button class="subtab" :class="{ on: tab === 'accounts' }" @click="tab = 'accounts'">账户</button>
-      <button class="subtab" :class="{ on: tab === 'tags' }" @click="tab = 'tags'">标签</button>
-    </div>
+    <!-- 账户 / 标签 次级 tab：投放到顶栏（与页标题同高、右对齐），页内不再单独占一行。 -->
+    <Teleport to="#topbar-slot">
+      <div class="subtabs">
+        <button class="subtab" :class="{ on: tab === 'accounts' }" @click="tab = 'accounts'">账户</button>
+        <button class="subtab" :class="{ on: tab === 'tags' }" @click="tab = 'tags'">标签</button>
+      </div>
+    </Teleport>
 
     <!-- ==================== 账户视图（双栏） ==================== -->
     <div v-if="tab === 'accounts'" class="two-col acc-two-col">
@@ -882,21 +884,20 @@ function txnAmountClass(t: TxnWithTags): string {
   text-overflow: ellipsis;
 }
 
-/* 次级 tab */
+/* 次级 tab（已投放到顶栏 #topbar-slot；顶栏用 flex 居中，无需下外边距） */
 .subtabs {
   display: inline-flex;
   gap: 4px;
   background: var(--surface-2);
   border-radius: var(--r-md);
   padding: 4px;
-  margin-bottom: 16px;
 }
 .subtab {
-  padding: 8px 20px;
+  padding: 6px 18px;
   border-radius: 7px;
   font-weight: 700;
   color: var(--fg-2);
-  font-size: var(--fs-body);
+  font-size: var(--fs-sm);
 }
 .subtab:hover {
   color: var(--fg);

@@ -64,6 +64,21 @@ const amountMinCents = ref<number | null>(null);
 const amountMaxCents = ref<number | null>(null);
 
 // ============================================================
+// 展示排序（从报告页迁入）：对过滤好的命中结果做展示排序。
+//   四选项：金额高→低 / 金额低→高 / 时间新→旧 / 时间旧→新；默认时间新→旧。
+//   排序作用于 TxnService.query 的 sortBy/sortDir（唯一真相源顺序），
+//   前端关键词过滤与日期分组均保持该顺序。
+// ============================================================
+type SortSel = 'time-desc' | 'time-asc' | 'amount-desc' | 'amount-asc';
+const sortSel = ref<SortSel>('time-desc');
+const SORT_OPTS: ReadonlyArray<{ v: SortSel; label: string }> = [
+  { v: 'time-desc', label: '时间（新→旧）' },
+  { v: 'time-asc', label: '时间（旧→新）' },
+  { v: 'amount-desc', label: '金额（高→低）' },
+  { v: 'amount-asc', label: '金额（低→高）' },
+];
+
+// ============================================================
 // 静态可选项（账户 / 分类 / 标签 / categoryId→Category 映射）
 // ============================================================
 const accounts = ref<Account[]>([]);
@@ -115,8 +130,11 @@ function categoryIdsForNames(names: string[]): Id[] {
 }
 
 const activeQuery = computed<TxnQuery>(() => {
-  // 默认全部时间（不传 timeFrom/timeTo）、时间倒序。
-  const q: TxnQuery = { sortBy: 'time', sortDir: 'desc' };
+  // 默认全部时间（不传 timeFrom/timeTo）；顺序由展示排序选项决定。
+  const q: TxnQuery = {
+    sortBy: sortSel.value.startsWith('amount') ? 'amount' : 'time',
+    sortDir: sortSel.value.endsWith('asc') ? 'asc' : 'desc',
+  };
   if (selectedTypes.value.length > 0) q.types = [...selectedTypes.value];
   if (selectedAccountIds.value.length > 0) q.accountIds = [...selectedAccountIds.value];
   const catIds = categoryIdsForNames(selectedCategoryNames.value);
@@ -717,7 +735,15 @@ function clearAll(): void {
       <div class="card">
         <div class="card-head">
           <h3>命中交易</h3>
-          <span class="faint" style="font-size: 13px">{{ hitCount }} 笔 · 按日期分组</span>
+          <div class="row gap-3" style="align-items: center">
+            <span class="faint" style="font-size: 13px">{{ hitCount }} 笔 · 按日期分组</span>
+            <label class="pill pill-active">
+              <span class="p-key">排序</span>
+              <select v-model="sortSel" class="sort-select" aria-label="展示排序">
+                <option v-for="o in SORT_OPTS" :key="o.v" :value="o.v">{{ o.label }}</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div class="card-pad" style="padding-top: 4px">
           <!-- 空态 -->
@@ -907,6 +933,16 @@ function clearAll(): void {
   font-size: var(--fs-sm);
   color: var(--fg-3);
   font-weight: 600;
+}
+
+/* 展示排序下拉（嵌在 pill 里的原生 select，去边框透明化；从报告页迁入） */
+.sort-select {
+  background: none;
+  border: none;
+  outline: none;
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
 }
 
 /* 大号搜索框（照抄 search.html 局部样式） */

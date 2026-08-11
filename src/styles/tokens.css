@@ -146,7 +146,6 @@ svg { display: block; }
   display: grid; place-items: center; color: #fff; flex-shrink: 0;
 }
 .brand-name { font-weight: 700; font-size: 15px; }
-.brand-sub { font-size: var(--fs-xs); color: var(--fg-3); }
 
 .nav-add {
   display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -168,11 +167,6 @@ svg { display: block; }
 .nav-item.active,
 .nav-item.router-link-active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
 
-.sidebar-foot { border-top: 1px solid var(--border); padding-top: 12px; }
-.user-chip { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-md); }
-.avatar-pair { display: flex; }
-.avatar { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--surface); display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-
 /* 主区 */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .topbar {
@@ -181,12 +175,9 @@ svg { display: block; }
   gap: 16px; padding: 0 22px;
 }
 .page-title { font-size: var(--fs-h2); font-weight: 700; }
-.topbar-search {
-  margin-left: auto; display: flex; align-items: center; gap: 8px;
-  background: var(--surface-2); border-radius: var(--r-pill);
-  padding: 8px 14px; color: var(--fg-3); width: 240px;
-}
-.topbar-search input { background: none; border: none; outline: none; width: 100%; color: var(--fg); }
+/* 页面级顶栏控制区：各页 <Teleport to="#topbar-slot"> 投放的控制条落于此，
+   右对齐、与页标题同高。空时不占位（无子元素时无视觉痕迹）。 */
+.topbar-slot { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
 .content { flex: 1; overflow: auto; padding: 22px; }
 .content::-webkit-scrollbar { width: 8px; }
@@ -375,11 +366,9 @@ svg { display: block; }
   .app-add-mode .m-tabbar, .app-add-mode .m-fab { display: none; }
   .app-add-mode .content { padding-bottom: 0; }
 
-  /* --- 顶栏：搜索输入框收起，放大镜图标登场（跳 /search） --- */
+  /* --- 顶栏：窄屏收紧间距，放大镜图标登场（跳 /search） --- */
   .topbar { padding: 0 16px; gap: 10px; }
-  .topbar .topbar-search { display: none; }
   .m-search-btn {
-    margin-left: auto;
     display: grid; place-items: center;
     width: 40px; height: 40px; border-radius: var(--r-md);
     color: var(--fg-2); flex-shrink: 0;

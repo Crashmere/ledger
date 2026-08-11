@@ -60,7 +60,6 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
         </div>
         <div>
           <div class="brand-name">记账</div>
-          <div class="brand-sub">本地优先 · 全平台</div>
         </div>
       </div>
 
@@ -100,18 +99,6 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
           {{ item.label }}
         </RouterLink>
       </nav>
-
-      <div class="sidebar-foot">
-        <div class="user-chip">
-          <div class="avatar-pair">
-            <span class="avatar" style="background: var(--acc-salary)">本</span>
-          </div>
-          <div>
-            <div style="font-weight: 600; font-size: 13px">我的账本</div>
-            <div class="brand-sub">本地优先 · 已保存</div>
-          </div>
-        </div>
-      </div>
     </aside>
 
     <!-- 主区 -->
@@ -125,13 +112,10 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
           </svg>
         </button>
         <div class="page-title">{{ pageTitle }}</div>
-        <div class="topbar-search">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4-4" />
-          </svg>
-          <input placeholder="搜索交易…" />
-        </div>
+        <!-- 页面级顶栏控制区：各页用 <Teleport to="#topbar-slot"> 把自己的控制条
+             （概览月份切换 / 账户·标签选择器等）投放到此，与页标题同高、右对齐。
+             桌面右上角原「搜索交易…」框已移除（无实际搜索能力）；手机端仍保留放大镜入口。 -->
+        <div id="topbar-slot" class="topbar-slot"></div>
         <!-- S11 手机端：桌面搜索框在窄屏收起为放大镜图标，点击进搜索页（§二.3）。桌面下 display:none。 -->
         <RouterLink to="/search" class="m-search-btn" aria-label="搜索">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
