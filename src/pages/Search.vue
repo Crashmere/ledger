@@ -198,36 +198,11 @@ const summaryHint = computed<string>(() => {
 });
 
 // ============================================================
-// 按本地日期分组（照抄 Overview.vue：query 已 time 倒序，组序天然从新到旧）
+// 命中列表【不分组】：所有命中交易同处一级，整体按展示排序（sortSel）排列。
+//   query 已按 sortBy/sortDir 排好，hitTxns 保持该顺序直接平铺渲染，
+//   每行自带日期（rowDateText），无需组头。
 // ============================================================
-interface DayGroup {
-  key: string;
-  label: string;
-  expense: number; // Cents，仅 expense
-  income: number; // Cents，仅 income
-  items: TxnWithTags[];
-}
-
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-
-const groups = computed<DayGroup[]>(() => {
-  const map = new Map<string, DayGroup>();
-  const order: string[] = [];
-  for (const t of hitTxns.value) {
-    const d = new Date(t.time);
-    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    let g = map.get(key);
-    if (!g) {
-      g = { key, label: dayLabel(d), expense: 0, income: 0, items: [] };
-      map.set(key, g);
-      order.push(key);
-    }
-    g.items.push(t);
-    if (t.type === 'expense') g.expense += t.amount;
-    else if (t.type === 'income') g.income += t.amount;
-  }
-  return order.map((k) => map.get(k)!);
-});
 
 // ============================================================
 // 选中交易详情
@@ -260,9 +235,9 @@ function dayLabel(d: Date): string {
   return `${md} · ${suffix}`;
 }
 
-/** 日小计文案：支出 X · 收入 Y（转账不计入）。 */
-function daySummaryText(g: DayGroup): string {
-  return `支出 ${fmtMoney(g.expense)} · 收入 ${fmtMoney(g.income)}`;
+/** 平铺列表每行日期（不分组后每行自带）：如「8月8日 · 今天」。 */
+function rowDateText(t: TxnWithTags): string {
+  return dayLabel(new Date(t.time));
 }
 
 /** ARGB 整数转 CSS rgba，用于账户/分类色标（与 Overview/AddTxn 一致）。 */
@@ -736,7 +711,7 @@ function clearAll(): void {
         <div class="card-head">
           <h3>命中交易</h3>
           <div class="row gap-3" style="align-items: center">
-            <span class="faint" style="font-size: 13px">{{ hitCount }} 笔 · 按日期分组</span>
+            <span class="faint" style="font-size: 13px">{{ hitCount }} 笔</span>
             <label class="pill pill-active">
               <span class="p-key">排序</span>
               <select v-model="sortSel" class="sort-select" aria-label="展示排序">
@@ -747,7 +722,7 @@ function clearAll(): void {
         </div>
         <div class="card-pad" style="padding-top: 4px">
           <!-- 空态 -->
-          <div v-if="!loading && groups.length === 0" class="empty">
+          <div v-if="!loading && hitTxns.length === 0" class="empty">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <circle cx="11" cy="11" r="7" />
               <path d="m21 21-4-4" />
@@ -756,66 +731,64 @@ function clearAll(): void {
             <div class="mt-2">换个关键词，或调整/清空筛选条件。</div>
           </div>
 
-          <template v-for="g in groups" :key="g.key">
-            <div class="day-head">
-              <span class="d-date">{{ g.label }}</span>
-              <span class="d-sum">{{ daySummaryText(g) }}</span>
+          <!-- 命中列表不分组：所有交易同处一级，整体按展示排序排列，每行自带日期。 -->
+          <div
+            v-for="t in hitTxns"
+            :key="t.id"
+            class="txn txn-clickable"
+            :class="{ 'txn-selected': t.id === selectedId }"
+            role="button"
+            tabindex="0"
+            @click="selectTxn(t.id)"
+            @keydown.enter="selectTxn(t.id)"
+          >
+            <div class="ic-tile" :style="{ background: txnColor(t) }">
+              <svg v-if="t.type === 'expense'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12l7 7 7-7" />
+              </svg>
+              <svg v-else-if="t.type === 'income'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 3l4 4-4 4M7 21l-4-4 4-4M21 7H8M3 17h13" />
+              </svg>
             </div>
-            <div
-              v-for="t in g.items"
-              :key="t.id"
-              class="txn txn-clickable"
-              :class="{ 'txn-selected': t.id === selectedId }"
-              role="button"
-              tabindex="0"
-              @click="selectTxn(t.id)"
-              @keydown.enter="selectTxn(t.id)"
-            >
-              <div class="ic-tile" :style="{ background: txnColor(t) }">
-                <svg v-if="t.type === 'expense'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 5v14M5 12l7 7 7-7" />
-                </svg>
-                <svg v-else-if="t.type === 'income'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 19V5M5 12l7-7 7 7" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M17 3l4 4-4 4M7 21l-4-4 4-4M21 7H8M3 17h13" />
-                </svg>
+            <div class="txn-main">
+              <div class="txn-title">
+                <span v-html="highlight(txnTitle(t), keyword)"></span>
+                <span v-if="t.type === 'transfer'" class="badge badge-transfer" style="margin-left: 6px">转账</span>
+                <span v-else-if="t.type === 'income'" class="badge badge-income" style="margin-left: 6px">收入</span>
               </div>
-              <div class="txn-main">
-                <div class="txn-title">
-                  <span v-html="highlight(txnTitle(t), keyword)"></span>
-                  <span v-if="t.type === 'transfer'" class="badge badge-transfer" style="margin-left: 6px">转账</span>
-                  <span v-else-if="t.type === 'income'" class="badge badge-income" style="margin-left: 6px">收入</span>
-                </div>
-                <div class="txn-sub">
-                  <template v-if="t.type === 'transfer'">
-                    <span>{{ accountName(t.accountId) }} → {{ accountName(t.toAccountId) }}</span>
+              <div class="txn-sub">
+                <template v-if="t.type === 'transfer'">
+                  <span>{{ accountName(t.accountId) }} → {{ accountName(t.toAccountId) }}</span>
+                </template>
+                <template v-else>
+                  <span>{{ accountName(t.accountId) }}</span>
+                  <template v-if="categoryName(t.categoryId)">
+                    <span class="sub-dot">·</span>
+                    <span v-html="highlight(categoryName(t.categoryId), keyword)"></span>
                   </template>
-                  <template v-else>
-                    <span>{{ accountName(t.accountId) }}</span>
-                    <template v-if="categoryName(t.categoryId)">
-                      <span class="sub-dot">·</span>
-                      <span v-html="highlight(categoryName(t.categoryId), keyword)"></span>
-                    </template>
-                  </template>
-                  <template v-if="t.tags.length">
-                    <span class="sep" />
-                    <span
-                      v-for="tag in t.tags"
-                      :key="tag.id"
-                      class="tag-inline"
-                      v-html="highlight(tag.name, keyword)"
-                    ></span>
-                  </template>
-                </div>
-                <div v-if="t.note && t.note.trim()" class="txn-note" :title="t.note">
-                  <span v-html="highlight(t.note, keyword)"></span>
-                </div>
+                </template>
+                <template v-if="t.tags.length">
+                  <span class="sep" />
+                  <span
+                    v-for="tag in t.tags"
+                    :key="tag.id"
+                    class="tag-inline"
+                    v-html="highlight(tag.name, keyword)"
+                  ></span>
+                </template>
               </div>
+              <div v-if="t.note && t.note.trim()" class="txn-note" :title="t.note">
+                <span v-html="highlight(t.note, keyword)"></span>
+              </div>
+            </div>
+            <div class="txn-right">
               <div class="txn-amt num" :class="txnAmountClass(t)">{{ txnAmountText(t) }}</div>
+              <div class="txn-date">{{ rowDateText(t) }}</div>
             </div>
-          </template>
+          </div>
         </div>
       </div>
 
@@ -1138,6 +1111,19 @@ function clearAll(): void {
 }
 .txn-sub .sub-dot {
   color: var(--fg-3);
+}
+/* 平铺列表右列：金额在上、日期在下（不分组后每行自带日期，右对齐不抢主信息）。 */
+.txn-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.txn-date {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  white-space: nowrap;
 }
 .txn-note {
   font-size: var(--fs-xs);

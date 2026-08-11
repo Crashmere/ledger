@@ -172,7 +172,7 @@ svg { display: block; }
 .topbar {
   height: 58px; flex-shrink: 0; border-bottom: 1px solid var(--border);
   background: var(--surface); display: flex; align-items: center;
-  gap: 16px; padding: 0 22px;
+  gap: 16px; padding: 0 22px; position: relative;
 }
 .page-title { font-size: var(--fs-h2); font-weight: 700; }
 /* 页面级顶栏控制区：各页 <Teleport to="#topbar-slot"> 投放的控制条落于此，

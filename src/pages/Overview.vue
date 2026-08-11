@@ -415,6 +415,16 @@ function txnAmountClass(t: TxnWithTags): string {
 </template>
 
 <style scoped>
+/* 顶栏月份切换：绝对定位居中于整条顶栏（不受左侧标题 / 右侧 slot 影响）。
+   仅作用于概览页投放的 .month-switch（scoped data-v 随 teleport 元素保留），
+   账户页的 .subtabs 仍走 .topbar-slot 的右对齐，互不干扰。 */
+#topbar-slot .month-switch {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
 /* S7.1：流水行备注（层级低于 .txn-sub 的最次要一行；单行省略，悬停看全文）。
    .txn-sub 用 --fg-3，本行叠加 opacity 再淡一级，不硬编码色值。 */
 .txn-note {
