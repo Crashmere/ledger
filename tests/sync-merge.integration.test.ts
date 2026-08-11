@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BetterSqliteAdapter, makeTestAdapter } from './better-sqlite-adapter';
 import { AccountServiceImpl, TxnServiceImpl, CategoryServiceImpl } from '../src/services';
-import { exportSnapshot, restoreSnapshot } from '../src/services/backup/snapshot';
+import { exportSnapshot, restoreSnapshot, type BackupSnapshot } from '../src/services/backup/snapshot';
 import { mergeSnapshots } from '../src/services/sync/merge';
 
 let base: BetterSqliteAdapter;
@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 /** 把一份快照恢复到目标库，返回其上的 service 三件套。 */
-async function restoreInto(adapter: BetterSqliteAdapter, snapJson: ReturnType<typeof cloneSnap>) {
+async function restoreInto(adapter: BetterSqliteAdapter, snapJson: BackupSnapshot) {
   await restoreSnapshot(adapter, snapJson);
   return {
     accounts: new AccountServiceImpl(adapter),
