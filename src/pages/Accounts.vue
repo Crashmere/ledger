@@ -1152,6 +1152,12 @@ function txnAmountClass(t: TxnWithTags): string {
   .acc-two-col {
     grid-template-columns: 1fr;
   }
+  /* 单列后 grid 列默认 minmax(auto,1fr)，auto 最小值=子项 max-content 宽，
+     会被卡头「N 个 · 总额」等不换行长行撑破视口 → 窄屏横向滚动（iPhone SE 320px 复现）。
+     给两列子项补 min-width:0，让列可收缩到容器宽度。（桌面双栏用固定 340px 列，不受影响。） */
+  .acc-two-col > * {
+    min-width: 0;
+  }
   .acc-list-card {
     position: static;
   }
