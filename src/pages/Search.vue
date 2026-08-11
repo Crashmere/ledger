@@ -1183,6 +1183,12 @@ function clearAll(): void {
   .search-two-col {
     grid-template-columns: 1fr;
   }
+  /* 单列后 grid 列默认 minmax(auto,1fr)，auto 最小值=子项 max-content 宽，
+     会被命中列表里的长标题/备注撑破视口 → 窄屏横向滚动（真实数据 375px 复现）。
+     给两列子项补 min-width:0，让列可收缩到容器宽度。（桌面双栏用固定 320px 列，不受影响。） */
+  .search-two-col > * {
+    min-width: 0;
+  }
   .grid.g-3 {
     grid-template-columns: 1fr;
   }
