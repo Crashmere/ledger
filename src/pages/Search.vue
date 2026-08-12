@@ -1089,6 +1089,16 @@ function clearAll(): void {
   align-items: start;
 }
 
+/* 右详情列随页面滚动吸顶跟随：桌面双栏下左命中列表常远长于右详情卡，
+   让详情列 sticky 停靠、滚动时始终可见（滚动容器是 .content，58px 顶栏是其上方
+   不滚动的兄弟节点，故吸顶点不被顶栏遮挡）。top 对齐 .content 的 22px 内边距，
+   静止态与吸顶态位置一致、无跳动。sticky 生效前提是该列不被拉伸到整行高——
+   已由上面的 align-items:start 保证。窄屏单列时在 900px 段还原为 static。 */
+.search-two-col > .stack {
+  position: sticky;
+  top: 22px;
+}
+
 /* 结果行可点击 + 选中高亮（负 margin 让底色铺满行内边距，照抄 Overview）。 */
 .txn-clickable {
   cursor: pointer;
@@ -1188,6 +1198,10 @@ function clearAll(): void {
      给两列子项补 min-width:0，让列可收缩到容器宽度。（桌面双栏用固定 320px 列，不受影响。） */
   .search-two-col > * {
     min-width: 0;
+  }
+  /* 单列下详情卡落到列表下方，吸顶跟随无意义且会遮挡列表，还原为普通流。 */
+  .search-two-col > .stack {
+    position: static;
   }
   .grid.g-3 {
     grid-template-columns: 1fr;
