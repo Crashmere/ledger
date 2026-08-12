@@ -54,7 +54,19 @@ const atCurrentMonth = computed(
   () => year.value === now.getFullYear() && month.value === now.getMonth(),
 );
 
+// 最早有交易记录的月份（本地口径 year*12+month），无任何交易时为 null。挂载时算一次，
+// 与 now 一样是进页时的快照；页面无 keep-alive，每次进入 Overview 都会重新加载刷新。
+const earliestMonthIndex = ref<number | null>(null);
+const currentMonthIndex = computed(() => year.value * 12 + month.value);
+
+// 是否已到达最早有记录的月份：到该月（或更早、或全账本无交易）则禁用「上一月」，
+// 与「下一月」在本月封顶对称——只能在有交易记录的月份范围内左右切换。
+const atEarliestMonth = computed(
+  () => earliestMonthIndex.value === null || currentMonthIndex.value <= earliestMonthIndex.value,
+);
+
 function prevMonth(): void {
+  if (atEarliestMonth.value) return;
   if (month.value === 0) {
     month.value = 11;
     year.value -= 1;
@@ -101,6 +113,15 @@ async function loadStatic(): Promise<void> {
     balMap.set(acc.id, await accountService.balance(acc.id));
   }
   balanceById.value = balMap;
+
+  // 最早一笔（未软删）交易的本地年月，用于给「上一月」封底——只能切到有记录的月份。
+  const [earliest] = await txnService.query({ sortBy: 'time', sortDir: 'asc', limit: 1 });
+  if (earliest) {
+    const d = new Date(earliest.time);
+    earliestMonthIndex.value = d.getFullYear() * 12 + d.getMonth();
+  } else {
+    earliestMonthIndex.value = null;
+  }
 }
 
 /** 随月份变化：三卡汇总 + 本月流水。 */
@@ -259,7 +280,7 @@ function txnAmountClass(t: TxnWithTags): string {
     <!-- 月份切换：投放到顶栏（与页标题同高、右对齐），页内不再单独占一行。 -->
     <Teleport to="#topbar-slot">
       <div class="month-switch">
-        <button aria-label="上一月" @click="prevMonth">‹</button>
+        <button aria-label="上一月" :disabled="atEarliestMonth" @click="prevMonth">‹</button>
         <span class="m-label">{{ monthLabel }}</span>
         <button aria-label="下一月" :disabled="atCurrentMonth" @click="nextMonth">›</button>
       </div>
