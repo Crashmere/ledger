@@ -75,6 +75,7 @@ const selectedAccountId = ref<Id | null>(null);
 const selectedCategories = ref<Category[]>([]); // 右栏分类网格（可拖拽重排）
 const monthTxns = ref<TxnWithTags[]>([]); // 本月该账户相关交易（算流入/流出、分类小计）
 const allTxns = ref<TxnWithTags[]>([]); // 该账户全部交易（明细列表）
+const categoryFilterId = ref<Id | null>(null); // 明细按分类筛选（null = 全部）；点分类网格切换
 
 // ---------- UI 状态 ----------
 type Modal = { kind: 'account' | 'category' | 'tag'; mode: 'create' | 'edit'; id?: Id } | null;
@@ -197,7 +198,13 @@ async function reloadTags(): Promise<void> {
 
 async function selectAccount(id: Id): Promise<void> {
   selectedAccountId.value = id;
+  categoryFilterId.value = null; // 切换账户清空明细的分类筛选
   await reloadDetail();
+}
+
+/** 点分类网格：切换明细筛选。再次点击已选分类则取消筛选。 */
+function toggleCategoryFilter(catId: Id): void {
+  categoryFilterId.value = categoryFilterId.value === catId ? null : catId;
 }
 
 onMounted(async () => {
@@ -371,6 +378,7 @@ function deleteCategory(cat: Category): void {
     onConfirm: async () => {
       try {
         await categoryService.remove(cat.id);
+        if (categoryFilterId.value === cat.id) categoryFilterId.value = null;
         await reloadAccounts();
         await reloadDetail();
         showFeedback('success', '分类已删除，相关交易保留');
@@ -470,10 +478,22 @@ interface DayGroup {
 }
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
+/** 当前筛选的分类对象（用于明细卡头展示 chip）；null = 未筛选。 */
+const filteredCategory = computed<Category | null>(() =>
+  categoryFilterId.value ? (categoryById.value.get(categoryFilterId.value) ?? null) : null,
+);
+
+/** 明细列表数据源：按选中分类过滤（null = 全部）。 */
+const filteredTxns = computed<TxnWithTags[]>(() => {
+  const cid = categoryFilterId.value;
+  if (!cid) return allTxns.value;
+  return allTxns.value.filter((t) => t.categoryId === cid);
+});
+
 const groups = computed<DayGroup[]>(() => {
   const map = new Map<string, DayGroup>();
   const order: string[] = [];
-  for (const t of allTxns.value) {
+  for (const t of filteredTxns.value) {
     const d = new Date(t.time);
     const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
     let g = map.get(key);
@@ -651,7 +671,14 @@ function txnAmountClass(t: TxnWithTags): string {
                 v-for="(cat, idx) in selectedCategories"
                 :key="cat.id"
                 class="cat-item"
+                :class="{ 'cat-item-on': categoryFilterId === cat.id }"
+                role="button"
+                tabindex="0"
+                :aria-pressed="categoryFilterId === cat.id"
+                :title="categoryFilterId === cat.id ? '点击取消筛选' : '点击只看该分类的交易'"
                 draggable="true"
+                @click="toggleCategoryFilter(cat.id)"
+                @keydown.enter="toggleCategoryFilter(cat.id)"
                 @dragstart="onDragStart('category', idx)"
                 @dragover.prevent
                 @drop="onDrop('category', idx)"
@@ -690,11 +717,22 @@ function txnAmountClass(t: TxnWithTags): string {
         <div class="card">
           <div class="card-head">
             <h3>该账户交易明细</h3>
-            <span class="faint" style="font-size: 13px">仅显示「{{ selectedAccount.name }}」</span>
+            <button
+              v-if="filteredCategory"
+              class="filter-chip"
+              title="点击清除分类筛选"
+              @click="categoryFilterId = null"
+            >
+              <span class="fc-dot" :style="{ background: argbToCss(filteredCategory.color) }" />
+              <span class="ellipsis">{{ filteredCategory.name }}</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
+            <span v-else class="faint" style="font-size: 13px">仅显示「{{ selectedAccount.name }}」</span>
           </div>
           <div class="card-pad" style="padding-top: 4px">
             <div v-if="groups.length === 0" class="empty" style="padding: 28px 12px">
-              <div style="font-weight: 700; color: var(--fg-2)">该账户还没有交易</div>
+              <div v-if="filteredCategory" style="font-weight: 700; color: var(--fg-2)">该分类下暂无交易</div>
+              <div v-else style="font-weight: 700; color: var(--fg-2)">该账户还没有交易</div>
             </div>
             <template v-for="g in groups" :key="g.key">
               <div class="day-head">
@@ -977,10 +1015,50 @@ function txnAmountClass(t: TxnWithTags): string {
   padding: 8px;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
+  cursor: pointer;
 }
 .cat-item:hover {
   border-color: var(--border-strong);
   background: var(--surface-2);
+}
+.cat-item-on {
+  border-color: transparent;
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.cat-item-on:hover {
+  background: var(--primary-soft);
+  border-color: transparent;
+}
+/* 明细卡头：可点击清除的分类筛选 chip */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.filter-chip:hover {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+.filter-chip .fc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.filter-chip svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 .cat-actions {
   display: flex;
