@@ -54,6 +54,36 @@ function openEdit(id: Id): void {
 const keyword = ref<string>('');
 
 // ============================================================
+// 搜索范围（关键词作用字段，前端纯同步）：限定关键词只对
+//   标题 / 备注 / 分类名 / 标签名 中被勾选的字段生效。
+//   默认四项全选（等价旧行为）；约束「至少保留 1 项」——全不选会让
+//   关键词无处可搜、结果恒空，反直觉，故取消最后一项时忽略。
+//   高亮亦跟随范围：未勾选的字段即便文本恰含关键词也不高亮，
+//   使命中高亮准确表达「因哪个字段命中」。
+// ============================================================
+type SearchField = 'title' | 'note' | 'category' | 'tag';
+const SEARCH_FIELDS: ReadonlyArray<{ v: SearchField; label: string }> = [
+  { v: 'title', label: '标题' },
+  { v: 'note', label: '备注' },
+  { v: 'category', label: '分类' },
+  { v: 'tag', label: '标签' },
+];
+const DEFAULT_SEARCH_FIELDS: SearchField[] = ['title', 'note', 'category', 'tag'];
+const searchFields = ref<SearchField[]>([...DEFAULT_SEARCH_FIELDS]);
+function fieldOn(f: SearchField): boolean {
+  return searchFields.value.includes(f);
+}
+function toggleField(f: SearchField): void {
+  const i = searchFields.value.indexOf(f);
+  if (i >= 0) {
+    if (searchFields.value.length === 1) return; // 至少保留 1 项
+    searchFields.value.splice(i, 1);
+  } else {
+    searchFields.value.push(f);
+  }
+}
+
+// ============================================================
 // 结构化筛选状态（chips）—— 走 TxnService.query
 // ============================================================
 const selectedTypes = ref<TxnType[]>([]); // 搜索页允许筛 transfer（与报告页不同）
@@ -164,17 +194,25 @@ onMounted(async () => {
 watch(activeQuery, () => void load(), { deep: true });
 
 // ============================================================
-// 关键词前端过滤（§四.3）：标题/备注/分类名/任一标签名 含 kw（不区分大小写）
+// 关键词前端过滤（§四.3）：在【搜索范围】勾选的字段里匹配 kw（不区分大小写）。
+//   范围决定参与匹配的字段（标题/备注/分类名/任一标签名），默认四项全含。
 // ============================================================
 const hitTxns = computed<TxnWithTags[]>(() => {
   const kw = keyword.value.trim().toLowerCase();
   if (!kw) return baseTxns.value;
+  const fields = searchFields.value;
+  const useTitle = fields.includes('title');
+  const useNote = fields.includes('note');
+  const useCat = fields.includes('category');
+  const useTag = fields.includes('tag');
   return baseTxns.value.filter((t) => {
-    if (t.title && t.title.toLowerCase().includes(kw)) return true;
-    if (t.note && t.note.toLowerCase().includes(kw)) return true;
-    const catName = t.categoryId ? categoryById.value.get(t.categoryId)?.name : '';
-    if (catName && catName.toLowerCase().includes(kw)) return true;
-    if (t.tags.some((tag) => tag.name.toLowerCase().includes(kw))) return true;
+    if (useTitle && t.title && t.title.toLowerCase().includes(kw)) return true;
+    if (useNote && t.note && t.note.toLowerCase().includes(kw)) return true;
+    if (useCat) {
+      const catName = t.categoryId ? categoryById.value.get(t.categoryId)?.name : '';
+      if (catName && catName.toLowerCase().includes(kw)) return true;
+    }
+    if (useTag && t.tags.some((tag) => tag.name.toLowerCase().includes(kw))) return true;
     return false;
   });
 });
@@ -359,6 +397,13 @@ function highlight(text: string, kw: string): string {
   }
   return out;
 }
+/**
+ * 字段级高亮：仅当该字段在【搜索范围】内时才高亮，否则只转义不加 <mark>。
+ *   使高亮准确表达「因哪个字段命中」——只搜标题时，备注里恰含关键词也不误标黄。
+ */
+function highlightField(text: string, field: SearchField): string {
+  return fieldOn(field) ? highlight(text, keyword.value) : escapeHtml(text ?? '');
+}
 
 // ============================================================
 // 最近搜索（localStorage 持久化，纯本地 UI 便利，不入库/不进云备份，§四.7）
@@ -503,6 +548,7 @@ function clearAll(): void {
   selectedTagIds.value = [];
   clearAmount();
   keyword.value = '';
+  searchFields.value = [...DEFAULT_SEARCH_FIELDS];
 }
 </script>
 
@@ -533,6 +579,21 @@ function clearAll(): void {
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
           <path d="M18 6 6 18M6 6l12 12" />
         </svg>
+      </button>
+    </div>
+
+    <!-- 搜索范围：限定关键词只对勾选字段生效（至少保留 1 项）。 -->
+    <div class="scope-row mt-3">
+      <span class="scope-key">搜索范围</span>
+      <button
+        v-for="f in SEARCH_FIELDS"
+        :key="'sf-' + f.v"
+        class="pill scope-pill"
+        :class="{ 'pill-active': fieldOn(f.v) }"
+        :aria-pressed="fieldOn(f.v)"
+        @click="toggleField(f.v)"
+      >
+        {{ f.label }}
       </button>
     </div>
 
@@ -755,7 +816,7 @@ function clearAll(): void {
             </div>
             <div class="txn-main">
               <div class="txn-title">
-                <span v-html="highlight(txnTitle(t), keyword)"></span>
+                <span v-html="highlightField(txnTitle(t), 'title')"></span>
                 <span v-if="t.type === 'transfer'" class="badge badge-transfer" style="margin-left: 6px">转账</span>
                 <span v-else-if="t.type === 'income'" class="badge badge-income" style="margin-left: 6px">收入</span>
               </div>
@@ -767,7 +828,7 @@ function clearAll(): void {
                   <span>{{ accountName(t.accountId) }}</span>
                   <template v-if="categoryName(t.categoryId)">
                     <span class="sub-dot">·</span>
-                    <span v-html="highlight(categoryName(t.categoryId), keyword)"></span>
+                    <span v-html="highlightField(categoryName(t.categoryId), 'category')"></span>
                   </template>
                 </template>
                 <template v-if="t.tags.length">
@@ -776,12 +837,12 @@ function clearAll(): void {
                     v-for="tag in t.tags"
                     :key="tag.id"
                     class="tag-inline"
-                    v-html="highlight(tag.name, keyword)"
+                    v-html="highlightField(tag.name, 'tag')"
                   ></span>
                 </template>
               </div>
               <div v-if="t.note && t.note.trim()" class="txn-note" :title="t.note">
-                <span v-html="highlight(t.note, keyword)"></span>
+                <span v-html="highlightField(t.note, 'note')"></span>
               </div>
             </div>
             <div class="txn-right">
@@ -825,7 +886,7 @@ function clearAll(): void {
                   </svg>
                 </div>
                 <div style="flex: 1; min-width: 0">
-                  <div style="font-weight: 700; font-size: 16px" v-html="highlight(txnTitle(selectedTxn), keyword)"></div>
+                  <div style="font-weight: 700; font-size: 16px" v-html="highlightField(txnTitle(selectedTxn), 'title')"></div>
                   <div class="muted" style="font-size: 12px; margin-top: 2px">{{ fullDateTimeText(selectedTxn) }}</div>
                 </div>
               </div>
@@ -852,7 +913,7 @@ function clearAll(): void {
               </div>
               <div v-else class="detail-kv">
                 <span class="k">分类</span>
-                <span class="v" v-html="highlight(categoryName(selectedTxn.categoryId) || '未分类', keyword)"></span>
+                <span class="v" v-html="highlightField(categoryName(selectedTxn.categoryId) || '未分类', 'category')"></span>
               </div>
               <div class="detail-kv">
                 <span class="k">日期</span>
@@ -866,7 +927,7 @@ function clearAll(): void {
                       v-for="tag in selectedTxn.tags"
                       :key="tag.id"
                       class="tag-inline"
-                      v-html="highlight(tag.name, keyword)"
+                      v-html="highlightField(tag.name, 'tag')"
                     ></span>
                   </template>
                   <span v-else class="faint">无</span>
@@ -875,7 +936,7 @@ function clearAll(): void {
 
               <div v-if="selectedTxn.note && selectedTxn.note.trim()" style="margin-top: 12px">
                 <span class="field-label">备注</span>
-                <div class="detail-note" v-html="highlight(selectedTxn.note, keyword)"></div>
+                <div class="detail-note" v-html="highlightField(selectedTxn.note, 'note')"></div>
               </div>
 
               <div class="row gap-2 mt-4">
@@ -1051,6 +1112,23 @@ function clearAll(): void {
   flex-direction: column;
   gap: 8px;
   padding: 4px;
+}
+
+/* 搜索范围：字段多选 pill 行（复用 .pill / .pill-active）。 */
+.scope-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.scope-row .scope-key {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.scope-pill {
+  cursor: pointer;
 }
 
 /* 最近搜索 */
