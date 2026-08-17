@@ -235,6 +235,30 @@ const summaryHint = computed<string>(() => {
   return kw ? `关键词「${kw}」 · 全部时间` : '全部交易 · 全部时间';
 });
 
+/**
+ * 折合全年（按筛选结果跨度）：把命中【支出】按其首末日期的日均速率外推到 365 天，
+ *   用来估「这类支出扩展到一整年大概多少」。仅支出、排除转账，与"支出合计"同源；整数分。
+ *   跨度天数 = round((最晚一笔 − 最早一笔) / 一天毫秒)，折合全年 = round(支出合计 / 跨度 × 365)。
+ *   支出 < 2 笔（无从算速率）或跨度 = 0（集中在同一天，外推会得到天文数字）→ amount=null，
+ *   UI 显示"—"并在副标题说明原因；绝不给会误导的数字。hint 附上依据便于自行判断可信度。
+ */
+const annual = computed<{ amount: number | null; hint: string }>(() => {
+  const list = hitTxns.value.filter((t) => t.type === 'expense');
+  if (list.length < 2) return { amount: null, hint: '支出样本不足（需 ≥2 笔）' };
+  let min = Infinity;
+  let max = -Infinity;
+  for (const t of list) {
+    if (t.time < min) min = t.time;
+    if (t.time > max) max = t.time;
+  }
+  const spanDays = Math.round((max - min) / 86400000);
+  if (spanDays <= 0) return { amount: null, hint: '支出集中在同一天，无法折算' };
+  return {
+    amount: Math.round((hitExpense.value / spanDays) * 365),
+    hint: `基于 ${spanDays} 天 · ${list.length} 笔支出`,
+  };
+});
+
 // ============================================================
 // 命中列表【不分组】：所有命中交易同处一级，整体按展示排序（sortSel）排列。
 //   query 已按 sortBy/sortDir 排好，hitTxns 保持该顺序直接平铺渲染，
@@ -728,8 +752,8 @@ function clearAll(): void {
 
     <div class="divider"></div>
 
-    <!-- 命中收支汇总三卡 -->
-    <div class="grid g-3 sum-strip">
+    <!-- 命中收支汇总四卡 -->
+    <div class="grid sum-strip">
       <div class="stat">
         <div class="s-label">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
@@ -762,6 +786,20 @@ function clearAll(): void {
           {{ fmtMoney(hitIncome, { sign: true }) }}
         </div>
         <div class="s-trend">仅统计收入（不含转账）</div>
+      </div>
+      <div class="stat">
+        <div class="s-label">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v18h18" />
+            <path d="m7 14 4-4 3 3 5-6" />
+          </svg>
+          折合全年
+        </div>
+        <div class="s-value num" :class="{ faint: annual.amount === null }">
+          <template v-if="annual.amount === null">—</template>
+          <template v-else>≈ −{{ fmtMoney(annual.amount) }}</template>
+        </div>
+        <div class="s-trend">{{ annual.hint }}</div>
       </div>
     </div>
 
@@ -1152,7 +1190,11 @@ function clearAll(): void {
   border-style: dashed;
 }
 
-/* 命中汇总条 */
+/* 命中汇总条：桌面四卡等宽（.grid 已给 display:grid+gap，此处只定列数，
+   不复用全局 .g-3 以免其 repeat(3) 特异性盖过下方响应式覆盖）。 */
+.sum-strip {
+  grid-template-columns: repeat(4, 1fr);
+}
 .sum-strip .stat {
   padding: 14px 16px;
 }
@@ -1281,8 +1323,9 @@ function clearAll(): void {
   .search-two-col > .stack {
     position: static;
   }
-  .grid.g-3 {
-    grid-template-columns: 1fr;
+  /* 汇总条：900px 内先收成两列（≤720 再塌单列，见下段）。 */
+  .sum-strip {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
@@ -1291,6 +1334,11 @@ function clearAll(): void {
    此处补齐搜索框、汇总三卡、弹层不溢出。不改搜索/过滤/高亮逻辑。
    ============================================================ */
 @media (max-width: 720px) {
+  /* 汇总四卡塌成单列，避免 SE 375 等窄屏横向溢出。 */
+  .sum-strip {
+    grid-template-columns: 1fr;
+  }
+
   /* 搜索框铺满、字段可点区域足够 */
   .search-box input.input {
     height: 44px;
