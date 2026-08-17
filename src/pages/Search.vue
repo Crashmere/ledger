@@ -606,7 +606,8 @@ function clearAll(): void {
       </button>
     </div>
 
-    <!-- 搜索范围：限定关键词只对勾选字段生效（至少保留 1 项）。 -->
+    <!-- 搜索范围 + 可叠加筛选：同一行。范围（关键词作用字段，至少留 1 项）在前，
+         细分隔符后接已选筛选 chips 与「添加筛选」入口。 -->
     <div class="scope-row mt-3">
       <span class="scope-key">搜索范围</span>
       <button
@@ -619,10 +620,10 @@ function clearAll(): void {
       >
         {{ f.label }}
       </button>
-    </div>
 
-    <!-- 可叠加筛选 chips -->
-    <div class="chip-row mt-3">
+      <span class="filter-sep" aria-hidden="true"></span>
+
+      <!-- 可叠加筛选 chips -->
       <span v-for="t in selectedTypes" :key="'ty-' + t" class="chip chip-on">
         类型：{{ typeLabel(t) }} <span class="x" role="button" @click="toggleType(t)">×</span>
       </span>
@@ -1067,13 +1068,7 @@ function clearAll(): void {
   color: #fdf3c9;
 }
 
-/* 筛选 chips 行 */
-.chip-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+/* 筛选 chip 的删除叉（× / 清空按钮同 z-index 见下） */
 .chip .x {
   cursor: pointer;
 }
@@ -1167,6 +1162,16 @@ function clearAll(): void {
 }
 .scope-pill {
   cursor: pointer;
+}
+
+/* 搜索范围与筛选合并同一行时的细竖分隔符：区隔「作用字段」与「叠加筛选」两类。
+   无筛选时它就是范围 pills 末尾的一个小竖线，语义上标示后面可继续添加筛选。 */
+.filter-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 20px;
+  background: var(--border);
+  margin: 0 2px;
 }
 
 /* 最近搜索 */
