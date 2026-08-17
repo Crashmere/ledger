@@ -32,7 +32,7 @@
 //   · 只写页面层：不改 src/services/** 与 src/db/**，服务层只当消费方调用。
 // ============================================================
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import {
   accountService,
   categoryService,
@@ -53,6 +53,20 @@ import {
 const tab = ref<'accounts' | 'tags'>('accounts');
 
 const router = useRouter();
+const route = useRoute();
+
+/**
+ * 选中账户 + 分类筛选写入 URL query（?account=..&cat=..），使「点交易进编辑页 →
+ *   router.back() 返回」后筛选与选中账户自动恢复（组件重挂载时从 query 读回）。
+ *   用 replace 不 push：账户页内切换不该在历史里堆条目，否则会污染编辑页的 back()。
+ *   值为 null 时删除对应 query 键，保持 URL 干净。
+ */
+function syncQuery(): void {
+  const q: Record<string, string> = {};
+  if (selectedAccountId.value) q.account = selectedAccountId.value;
+  if (categoryFilterId.value) q.cat = categoryFilterId.value;
+  void router.replace({ query: q });
+}
 
 /** 点该账户明细里的流水行 → 进入编辑该笔（方案 A：复用 AddTxn 表单）。转账行同样可编辑。 */
 function openEdit(id: Id): void {
@@ -199,18 +213,35 @@ async function reloadTags(): Promise<void> {
 async function selectAccount(id: Id): Promise<void> {
   selectedAccountId.value = id;
   categoryFilterId.value = null; // 切换账户清空明细的分类筛选
+  syncQuery();
   await reloadDetail();
 }
 
 /** 点分类网格：切换明细筛选。再次点击已选分类则取消筛选。 */
 function toggleCategoryFilter(catId: Id): void {
   categoryFilterId.value = categoryFilterId.value === catId ? null : catId;
+  syncQuery();
 }
 
 onMounted(async () => {
+  // 从 URL query 预置选中账户：reloadAccounts 内的存在性兜底会校验其有效性
+  //（query 账户已被删/不存在 → 自动回退到第一个账户）。
+  const qAccount = route.query.account;
+  if (typeof qAccount === 'string' && qAccount) selectedAccountId.value = qAccount;
+
   await reloadAccounts();
   await reloadTags();
+
+  // 恢复分类筛选：仅当该分类确属当前选中账户时才生效（防串账户/已删分类）。
+  const qCat = route.query.cat;
+  if (typeof qCat === 'string' && qCat && selectedAccountId.value) {
+    const cats = categoriesByAccount.value.get(selectedAccountId.value) ?? [];
+    if (cats.some((c) => c.id === qCat)) categoryFilterId.value = qCat;
+  }
+
   await reloadDetail();
+  // query 里可能残留失效的 account/cat（已删除等）→ 用兜底后的真实状态回写，保持 URL 一致。
+  syncQuery();
 });
 
 // ============================================================
