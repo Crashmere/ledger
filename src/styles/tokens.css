@@ -356,6 +356,17 @@ svg { display: block; }
 /* 默认（桌面）：手机专属元素隐藏，确保桌面零回归。 */
 .m-tabbar, .m-fab, .m-search-btn, .m-back-btn { display: none; }
 
+/* 记一笔/编辑页（add-mode）：桌面顶栏也需返回入口——此流程无侧栏可依（专注录入），
+   否则桌面只能靠「保存修改/删除」离开。故让返回键在桌面 add-mode 下显现并自带尺寸样式；
+   手机端另有 @media(≤720) 段的同名规则接管，两者不冲突。 */
+.app-add-mode .m-back-btn {
+  display: grid; place-items: center;
+  width: 40px; height: 40px; border-radius: var(--r-md);
+  margin-left: -8px; border: none; background: none;
+  color: var(--fg); flex-shrink: 0; cursor: pointer;
+}
+.app-add-mode .m-back-btn:hover { background: var(--surface-2); }
+
 @media (max-width: 720px) {
   /* --- 布局翻转：外壳竖排，侧栏收起，主区铺满 --- */
   .app { flex-direction: column; height: 100dvh; } /* dvh 跟随移动端地址栏，比 vh 稳（坑3） */
