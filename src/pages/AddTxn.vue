@@ -83,6 +83,14 @@ const notFound = ref(false); // 编辑模式取不到该笔 → 友好提示后�
 const feedback = ref<{ kind: 'success' | 'error'; msg: string } | null>(null);
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Tab 循环焦点：本页 Tab / Shift+Tab 只在「金额框 → 标题框 → 备注框」三者间轮转，
+// 不落到数字键盘按钮、账户/分类/日期/标签选择器、保存/删除按钮等其它可聚焦元素上
+// （见 onKeydown 的 Tab 分支）。金额框本身不是 input，靠 tabindex 变可聚焦；聚焦后
+// 物理数字键仍由 onKeydown 走 press()，手感不变。
+const amountBoxEl = ref<HTMLElement | null>(null);
+const titleInputEl = ref<HTMLInputElement | null>(null);
+const noteInputEl = ref<HTMLInputElement | null>(null);
+
 // ============================================================
 // 计算属性
 // ============================================================
@@ -463,8 +471,29 @@ function goBack(): void {
 // 物理键盘（辅助，非必需）
 // ============================================================
 function onKeydown(e: KeyboardEvent): void {
-  // 备注/标题等输入框聚焦时不拦截键盘。
   const el = e.target as HTMLElement | null;
+
+  // Tab / Shift+Tab：本页焦点只在「金额框 → 标题框 → 备注框」三者间循环，
+  //   数字键盘、账户/分类/日期/标签选择器、保存/删除按钮等一律不参与 Tab。
+  //   做法：拦截 Tab 阻止浏览器默认移焦，按当前焦点在三元环里手动前/后移一位。
+  //   放在输入框早退之前，否则聚焦标题/备注时 Tab 会被下面的 return 漏掉。
+  if (e.key === 'Tab') {
+    const amount = amountBoxEl.value;
+    const titleEl = titleInputEl.value;
+    const noteEl = noteInputEl.value;
+    if (amount && titleEl && noteEl) {
+      e.preventDefault();
+      const cycle: HTMLElement[] = [amount, titleEl, noteEl];
+      const len = cycle.length;
+      const idx = el ? cycle.indexOf(el) : -1;
+      // 正向：不在环内(idx=-1)→首位(金额)；反向：不在环内→末位(备注)。
+      const next = e.shiftKey ? cycle[(idx <= 0 ? len : idx) - 1] : cycle[(idx + 1) % len];
+      next.focus();
+    }
+    return;
+  }
+
+  // 备注/标题等输入框聚焦时不拦截键盘。
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
   // Esc 分层（与搜索页同思路）：先关删除确认 → 再关选择器浮层 →
   //   金额非空则清空金额 → 金额为空则返回上一页。'c' 始终等于清空金额。
@@ -616,8 +645,8 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <!-- 金额显示（视觉焦点） -->
-        <div class="amount-display amount-lg" :class="type">
+        <!-- 金额显示（视觉焦点）：tabindex=0 使之可被 Tab 聚焦，聚焦后物理数字键仍由 onKeydown 处理。 -->
+        <div ref="amountBoxEl" class="amount-display amount-lg" :class="type" tabindex="0" role="group" aria-label="金额">
           <span class="cur">¥</span><span class="val num">{{ displayValue }}</span>
           <div class="expr num">{{ exprLine }}</div>
         </div>
@@ -657,7 +686,7 @@ onUnmounted(() => {
         <!-- 标题（主要信息，选填） -->
         <div class="field add-f-title">
           <label class="field-label">标题</label>
-          <input v-model="title" class="input" placeholder="标题（选填，如：晚饭）" />
+          <input ref="titleInputEl" v-model="title" class="input" placeholder="标题（选填，如：晚饭）" />
         </div>
 
         <!-- 手机端把 账户·分类 压成一行两 pill（桌面 display:contents 不改变纵向堆叠） -->
@@ -806,7 +835,7 @@ onUnmounted(() => {
               <path d="M11 4H4v16h16v-7" />
               <path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" />
             </svg>
-            <input v-model="note" placeholder="备注（选填，详细信息）" />
+            <input ref="noteInputEl" v-model="note" placeholder="备注（选填，详细信息）" />
           </div>
         </div>
 
