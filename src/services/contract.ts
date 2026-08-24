@@ -15,6 +15,14 @@ export type { Id, Cents, EpochMs };
 
 export type TxnType = 'income' | 'expense' | 'transfer';
 
+/**
+ * 账户种类：
+ *   - 'normal'（或历史 NULL）：普通账户，计入日常余额与统计。
+ *   - 'project'：专项账户（如一次旅行），默认不计入余额总额，且交易被全局收支统计排除。
+ * 开放枚举，未来可扩展（如 'budget'）。领域层归一：NULL → 'normal'。
+ */
+export type AccountKind = 'normal' | 'project';
+
 // ------------------------------------------------------------
 // 实体类型（与 05-drizzle-schema.ts 的推断类型对应）
 // ------------------------------------------------------------
@@ -27,6 +35,10 @@ export interface Account {
   includeInBalance: boolean; // 存储层用 0/1，领域层用 boolean
   orderNum: number;
   createdAt: EpochMs;
+  kind: AccountKind; // v3：账户种类（存储层 NULL 归一为 'normal'）
+  periodStart: EpochMs | null; // v3：专项时间段起（仅 project 有意义）
+  periodEnd: EpochMs | null; // v3：专项时间段止
+  archivedAt: EpochMs | null; // v3：归档/结束标记，非空=已归档
 }
 
 export interface Category {
@@ -69,8 +81,12 @@ export interface AccountDraft {
   color: number;
   icon?: string | null;
   initialBalance?: Cents; // 默认 0
-  includeInBalance?: boolean; // 默认 true
+  includeInBalance?: boolean; // 默认 true；专项账户建议 false
   orderNum?: number; // 省略则追加到末尾
+  kind?: AccountKind; // 省略=普通账户；'project'=专项
+  periodStart?: EpochMs | null; // 专项时间段起
+  periodEnd?: EpochMs | null; // 专项时间段止
+  archivedAt?: EpochMs | null; // 归档标记
 }
 
 export interface CategoryDraft {
@@ -149,6 +165,11 @@ export interface TxnQuery {
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /**
+   * 省略/false = 不排除；true = 排除属于专项账户（kind='project'）的交易。
+   * 用于概览/报告等「日常口径」默认屏蔽专项开支；显式选中专项账户时不要置 true。
+   */
+  excludeProjects?: boolean;
 }
 
 /** 交易带上关联标签一起返回，方便 UI 渲染。 */
@@ -187,15 +208,19 @@ export interface TrendPoint {
 }
 
 export interface StatsService {
-  /** 概览汇总（可选时间/账户范围）。 */
-  summary(q?: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo'>): Promise<Summary>;
+  /** 概览汇总（可选时间/账户范围；excludeProjects 排除专项账户交易）。 */
+  summary(
+    q?: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'>,
+  ): Promise<Summary>;
   /** 按分类名合并的支出/收入分布（饼图）。 */
   breakdownByCategory(
-    q: Pick<TxnQuery, 'types' | 'accountIds' | 'timeFrom' | 'timeTo'>,
+    q: Pick<TxnQuery, 'types' | 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'>,
   ): Promise<CategoryBreakdownRow[]>;
   /** 收支趋势（趋势图）。 */
   trend(
-    q: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo'> & { granularity: 'day' | 'month' },
+    q: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'> & {
+      granularity: 'day' | 'month';
+    },
   ): Promise<TrendPoint[]>;
 }
 

@@ -102,6 +102,11 @@ const fName = ref('');
 const fColor = ref<number>(DEFAULT_COLOR);
 const fInitialBalance = ref('0'); // 元字符串，仅账户用
 const fIncludeInBalance = ref(true); // 仅账户用
+// 专项账户表单字段（仅 account 且 kind=project 时有意义）
+const fKind = ref<'normal' | 'project'>('normal');
+const fPeriodStart = ref(''); // yyyy-mm-dd（可空）
+const fPeriodEnd = ref(''); // yyyy-mm-dd（可空）
+const fArchived = ref(false); // 是否已归档（结束）
 
 // 预设色板（来自设计 token）；存储为 ARGB 整数。
 const COLOR_PRESETS = [
@@ -133,6 +138,38 @@ const selectedAccount = computed(
   () => accounts.value.find((a) => a.id === selectedAccountId.value) ?? null,
 );
 
+/** 普通账户（列表主区）：kind !== 'project'。 */
+const normalAccounts = computed(() => accounts.value.filter((a) => a.kind !== 'project'));
+/** 专项账户（独立分区）：kind === 'project'。 */
+const projectAccounts = computed(() => accounts.value.filter((a) => a.kind === 'project'));
+
+/** 当前选中账户是否专项账户（决定右栏是否显示时间段/归档信息）。 */
+const isProjectSelected = computed(() => selectedAccount.value?.kind === 'project');
+
+/** 把 epoch ms 格式化成 yyyy-mm-dd（本地时区）用于展示与 date input 回填。 */
+function fmtDateInput(ms: number | null): string {
+  if (ms === null) return '';
+  const d = new Date(ms);
+  const p = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+/** 把 date input 的 yyyy-mm-dd 解析为当天本地零点 epoch ms；空串 → null。 */
+function parseDateInput(s: string): number | null {
+  if (!s) return null;
+  const [y, m, d] = s.split('-').map((x) => parseInt(x, 10));
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+}
+/** 专项账户时间段的可读展示（卡头副标题用）。 */
+function periodText(a: Account): string {
+  const s = a.periodStart !== null ? fmtDateInput(a.periodStart) : '';
+  const e = a.periodEnd !== null ? fmtDateInput(a.periodEnd) : '';
+  if (s && e) return `${s} ~ ${e}`;
+  if (s) return `${s} 起`;
+  if (e) return `截至 ${e}`;
+  return '未设时间段';
+}
+
 /** 卡头「总额」：只累加 includeInBalance=true 的账户余额（false 的仍在列表但不计入）。 */
 const totalBalance = computed(() => {
   let sum = 0;
@@ -162,7 +199,14 @@ const monthFlow = computed(() => {
 const modalTitle = computed(() => {
   const m = modal.value;
   if (!m) return '';
-  const noun = m.kind === 'account' ? '账户' : m.kind === 'category' ? '分类' : '标签';
+  const noun =
+    m.kind === 'account'
+      ? fKind.value === 'project'
+        ? '专项账户'
+        : '账户'
+      : m.kind === 'category'
+        ? '分类'
+        : '标签';
   return `${m.mode === 'create' ? '新建' : '编辑'}${noun}`;
 });
 
@@ -257,11 +301,16 @@ async function onDrop(kind: 'account' | 'category', index: number): Promise<void
   if (!d || d.kind !== kind || d.index === index) return;
 
   if (kind === 'account') {
-    const arr = accounts.value.slice();
-    const [moved] = arr.splice(d.index, 1);
-    arr.splice(index, 0, moved);
-    accounts.value = arr;
-    await accountService.reorder(arr.map((a) => a.id));
+    // 左栏只对普通账户开放拖拽；索引基于 normalAccounts。重排后与专项账户拼回
+    // 完整顺序（专项保持原相对次序）一起 reorder，避免 order_num 混乱。
+    const normals = normalAccounts.value.slice();
+    const [moved] = normals.splice(d.index, 1);
+    normals.splice(index, 0, moved);
+    const orderedIds = [...normals, ...projectAccounts.value].map((a) => a.id);
+    // 本地即时反映（accounts 需与新顺序一致，computed 会重新过滤出两个分区）。
+    const byId = new Map(accounts.value.map((a) => [a.id, a]));
+    accounts.value = orderedIds.map((id) => byId.get(id)!);
+    await accountService.reorder(orderedIds);
   } else {
     const accId = selectedAccountId.value;
     if (!accId) return;
@@ -282,6 +331,22 @@ function openAccountCreate(): void {
   fColor.value = DEFAULT_COLOR;
   fInitialBalance.value = '0';
   fIncludeInBalance.value = true;
+  fKind.value = 'normal';
+  fPeriodStart.value = '';
+  fPeriodEnd.value = '';
+  fArchived.value = false;
+  modal.value = { kind: 'account', mode: 'create' };
+}
+/** 新建专项账户：预置 kind=project、默认不计入总额（自成小账本）。 */
+function openProjectCreate(): void {
+  fName.value = '';
+  fColor.value = hexToArgb('#9334e6'); // 专项用紫色系默认，视觉上与日常账户区分
+  fInitialBalance.value = '0';
+  fIncludeInBalance.value = false; // 专项默认不计入左栏总额
+  fKind.value = 'project';
+  fPeriodStart.value = '';
+  fPeriodEnd.value = '';
+  fArchived.value = false;
   modal.value = { kind: 'account', mode: 'create' };
 }
 function openAccountEdit(acc: Account): void {
@@ -289,6 +354,10 @@ function openAccountEdit(acc: Account): void {
   fColor.value = acc.color;
   fInitialBalance.value = centsToYuan(acc.initialBalance);
   fIncludeInBalance.value = acc.includeInBalance;
+  fKind.value = acc.kind === 'project' ? 'project' : 'normal';
+  fPeriodStart.value = fmtDateInput(acc.periodStart);
+  fPeriodEnd.value = fmtDateInput(acc.periodEnd);
+  fArchived.value = acc.archivedAt !== null;
   modal.value = { kind: 'account', mode: 'edit', id: acc.id };
 }
 function openCategoryCreate(): void {
@@ -327,18 +396,30 @@ async function saveModal(): Promise<void> {
   saving.value = true;
   try {
     if (m.kind === 'account') {
+      // 归档时间戳：勾选“已归档”则写当前时间（若原本已归档，编辑分支下方会保留原值优先）。
       const draft = {
         name,
         color: fColor.value,
         initialBalance: yuanToCents(fInitialBalance.value || '0'),
         includeInBalance: fIncludeInBalance.value,
+        kind: fKind.value,
+        periodStart: parseDateInput(fPeriodStart.value),
+        periodEnd: parseDateInput(fPeriodEnd.value),
       };
       if (m.mode === 'create') {
-        const created = await accountService.create(draft);
+        const created = await accountService.create({
+          ...draft,
+          archivedAt: fArchived.value ? Date.now() : null,
+        });
         await reloadAccounts();
         selectedAccountId.value = created.id;
       } else {
-        await accountService.update(m.id!, draft);
+        // 归档标记：未归档→勾选=写入当前时间；已归档保持原值；取消勾选=清空。
+        const existing = accounts.value.find((a) => a.id === m.id);
+        const archivedAt = fArchived.value
+          ? (existing?.archivedAt ?? Date.now())
+          : null;
+        await accountService.update(m.id!, { ...draft, archivedAt });
         await reloadAccounts();
       }
       await reloadDetail();
@@ -616,7 +697,7 @@ function txnAmountClass(t: TxnWithTags): string {
         </div>
         <div class="card-pad" style="padding-top: 6px">
           <div
-            v-for="(acc, idx) in accounts"
+            v-for="(acc, idx) in normalAccounts"
             :key="acc.id"
             class="acc-row"
             :class="{ on: acc.id === selectedAccountId }"
@@ -657,6 +738,40 @@ function txnAmountClass(t: TxnWithTags): string {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" /></svg>
             新建账户
           </button>
+
+          <!-- 专项账户分区：独立于日常账户，统计默认排除。彼此隔离、又聚在一起。 -->
+          <div class="proj-section">
+            <div class="proj-section-head">
+              <span>专项账户</span>
+              <span class="faint" style="font-size: 12px; font-weight: 600">不计入统计 · {{ projectAccounts.length }} 个</span>
+            </div>
+            <div
+              v-for="acc in projectAccounts"
+              :key="acc.id"
+              class="acc-row"
+              :class="{ on: acc.id === selectedAccountId }"
+              @click="selectAccount(acc.id)"
+            >
+              <span v-if="acc.id === selectedAccountId" class="acc-row-bar" :style="{ background: argbToCss(acc.color) }" />
+              <div class="ic-tile sm" :style="{ background: argbToCss(acc.color) }">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M3 7h18M3 7l2-3h14l2 3M5 7v13h14V7" /><path d="M9 11h6" />
+                </svg>
+              </div>
+              <div class="txn-main">
+                <div class="txn-title" style="font-size: 14px">
+                  {{ acc.name }}
+                  <span v-if="acc.archivedAt !== null" class="badge" style="background: var(--surface-2); color: var(--fg-3); margin-left: 6px">已归档</span>
+                </div>
+                <div class="txn-sub">{{ periodText(acc) }}</div>
+              </div>
+              <div class="num" style="font-weight: 700">{{ format(balanceById.get(acc.id) ?? 0) }}</div>
+            </div>
+            <button class="btn btn-ghost btn-block mt-2" style="border-style: dashed; color: var(--fg-2)" @click="openProjectCreate">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" /></svg>
+              新建专项账户
+            </button>
+          </div>
         </div>
       </div>
 
@@ -676,6 +791,9 @@ function txnAmountClass(t: TxnWithTags): string {
             <div style="flex: 1; min-width: 0">
               <div style="font-size: 13px; opacity: 0.9; font-weight: 600">{{ selectedAccount.name }} · 当前余额</div>
               <div class="num acc-hero-amt">¥{{ format(balanceById.get(selectedAccount.id) ?? 0) }}</div>
+              <div v-if="isProjectSelected" style="font-size: 12px; opacity: 0.9; font-weight: 600">
+                专项 · {{ periodText(selectedAccount) }}<template v-if="selectedAccount.archivedAt !== null"> · 已归档</template>
+              </div>
             </div>
             <button class="btn btn-sm acc-hero-edit" @click="openAccountEdit(selectedAccount)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -900,6 +1018,33 @@ function txnAmountClass(t: TxnWithTags): string {
                 <span class="faint" style="font-size: 13px">{{ fIncludeInBalance ? '计入左栏总额' : '不计入左栏总额' }}</span>
               </div>
             </div>
+
+            <!-- 专项账户专属：时间段 + 归档。专项账户交易被全局统计排除。 -->
+            <template v-if="fKind === 'project'">
+              <div class="divider" style="margin: 2px 0" />
+              <div class="faint" style="font-size: 12px; line-height: 1.5">
+                专项账户用于记录某段时间的特殊开支（如一次旅行），其交易不计入概览/报告等日常统计。
+              </div>
+              <div class="row gap-3">
+                <div class="field" style="flex: 1">
+                  <label class="field-label">开始日期</label>
+                  <input v-model="fPeriodStart" class="input" type="date" />
+                </div>
+                <div class="field" style="flex: 1">
+                  <label class="field-label">结束日期</label>
+                  <input v-model="fPeriodEnd" class="input" type="date" />
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label">已结束（归档）</label>
+                <div class="row gap-3">
+                  <button class="switch" :class="{ on: fArchived }" role="switch" :aria-checked="fArchived" @click="fArchived = !fArchived">
+                    <span class="knob" />
+                  </button>
+                  <span class="faint" style="font-size: 13px">{{ fArchived ? '已归档：标记该专项已结束' : '进行中' }}</span>
+                </div>
+              </div>
+            </template>
           </template>
         </div>
 
@@ -1018,6 +1163,22 @@ function txnAmountClass(t: TxnWithTags): string {
 }
 .drag-handle:active {
   cursor: grabbing;
+}
+
+/* 专项账户分区：与日常账户视觉分隔（顶部分隔线 + 区标题） */
+.proj-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.proj-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+  padding: 0 8px 6px;
 }
 
 /* 账户头部色块卡 */

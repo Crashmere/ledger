@@ -215,8 +215,8 @@ export async function restoreSnapshot(
     //    updated_at→created_at，deleted_at→null）。
     for (const a of account) {
       await tx.run(
-        `INSERT INTO account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at,kind,period_start,period_end,archived_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           a.id,
           a.name,
@@ -228,6 +228,11 @@ export async function restoreSnapshot(
           a.created_at,
           a.updated_at ?? a.created_at,
           a.deleted_at ?? null,
+          // v3：兼容 v1/v2 旧快照（缺列时回落 NULL，即普通账户）。
+          a.kind ?? null,
+          a.period_start ?? null,
+          a.period_end ?? null,
+          a.archived_at ?? null,
         ],
       );
     }

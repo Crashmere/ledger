@@ -23,7 +23,8 @@ export class AccountServiceImpl implements AccountService {
 
   async list(): Promise<Account[]> {
     const rows = await this.adapter.all<AccountRow>(
-      `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at
+      `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at,
+              kind, period_start, period_end, archived_at
          FROM account
         WHERE deleted_at IS NULL
         ORDER BY order_num ASC`,
@@ -33,7 +34,8 @@ export class AccountServiceImpl implements AccountService {
 
   async get(id: Id): Promise<Account | null> {
     const row = await this.adapter.get<AccountRow>(
-      `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at
+      `SELECT id, name, color, icon, initial_balance, include_in_balance, order_num, created_at,
+              kind, period_start, period_end, archived_at
          FROM account WHERE id = ? AND deleted_at IS NULL`,
       [id],
     );
@@ -50,11 +52,16 @@ export class AccountServiceImpl implements AccountService {
     const initialBalance = draft.initialBalance ?? 0;
     const includeInBalance = draft.includeInBalance ?? true;
     const orderNum = draft.orderNum ?? (await this.nextOrderNum());
+    const kind = draft.kind ?? 'normal';
+    const periodStart = draft.periodStart ?? null;
+    const periodEnd = draft.periodEnd ?? null;
+    const archivedAt = draft.archivedAt ?? null;
 
     await this.adapter.run(
       `INSERT INTO account
-         (id, name, color, icon, initial_balance, include_in_balance, order_num, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         (id, name, color, icon, initial_balance, include_in_balance, order_num, created_at, updated_at, deleted_at,
+          kind, period_start, period_end, archived_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
       [
         id,
         draft.name,
@@ -65,6 +72,11 @@ export class AccountServiceImpl implements AccountService {
         orderNum,
         createdAt,
         createdAt, // 新建：updated_at = created_at
+        // v3：普通账户的 kind 存 NULL（保持与存量行一致、快照更干净），仅专项存 'project'。
+        kind === 'project' ? 'project' : null,
+        periodStart,
+        periodEnd,
+        archivedAt,
       ],
     );
 
@@ -78,6 +90,10 @@ export class AccountServiceImpl implements AccountService {
       includeInBalance,
       orderNum,
       createdAt,
+      kind,
+      periodStart,
+      periodEnd,
+      archivedAt,
     };
   }
 
@@ -115,6 +131,23 @@ export class AccountServiceImpl implements AccountService {
     if (patch.orderNum !== undefined) {
       sets.push('order_num = ?');
       params.push(patch.orderNum);
+    }
+    if (patch.kind !== undefined) {
+      // 普通账户存 NULL、专项存 'project'，与新建口径一致。
+      sets.push('kind = ?');
+      params.push(patch.kind === 'project' ? 'project' : null);
+    }
+    if (patch.periodStart !== undefined) {
+      sets.push('period_start = ?');
+      params.push(patch.periodStart ?? null);
+    }
+    if (patch.periodEnd !== undefined) {
+      sets.push('period_end = ?');
+      params.push(patch.periodEnd ?? null);
+    }
+    if (patch.archivedAt !== undefined) {
+      sets.push('archived_at = ?');
+      params.push(patch.archivedAt ?? null);
     }
 
     // 无论改了哪些字段，只要调用 update 就 bump updated_at（LWW 时间戳）。

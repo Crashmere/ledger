@@ -30,7 +30,7 @@ export class StatsServiceImpl implements StatsService {
   constructor(private readonly adapter: SqliteAdapter = getAdapter()) {}
 
   async summary(
-    q?: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo'>,
+    q?: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'>,
   ): Promise<Summary> {
     const where: string[] = [];
     const params: unknown[] = [];
@@ -51,6 +51,10 @@ export class StatsServiceImpl implements StatsService {
     if (q?.timeTo !== undefined) {
       where.push(`time <= ?`);
       params.push(q.timeTo);
+    }
+    // 排除专项账户交易（日常口径）。收支无转入语义，只按 account_id 过滤即可。
+    if (q?.excludeProjects) {
+      where.push(`account_id NOT IN (SELECT id FROM account WHERE kind = 'project')`);
     }
 
     const row = await this.adapter.get<{ income: number; expense: number }>(
@@ -75,7 +79,7 @@ export class StatsServiceImpl implements StatsService {
   //   按 amount 降序返回。join category 用 LEFT JOIN + 显式列别名，规避列顺序坑。
   // ----------------------------------------------------------
   async breakdownByCategory(
-    q: Pick<TxnQuery, 'types' | 'accountIds' | 'timeFrom' | 'timeTo'>,
+    q: Pick<TxnQuery, 'types' | 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'>,
   ): Promise<CategoryBreakdownRow[]> {
     const where: string[] = [];
     const params: unknown[] = [];
@@ -105,6 +109,10 @@ export class StatsServiceImpl implements StatsService {
     if (q.timeTo !== undefined) {
       where.push(`t.time <= ?`);
       params.push(q.timeTo);
+    }
+    // 排除专项账户交易（日常口径）。
+    if (q.excludeProjects) {
+      where.push(`t.account_id NOT IN (SELECT id FROM account WHERE kind = 'project')`);
     }
 
     // 分组键统一用 COALESCE(c.name, '未分类')，让无分类交易并成一行。
@@ -138,7 +146,9 @@ export class StatsServiceImpl implements StatsService {
   //   每桶输出 income/expense（整数分），按 bucket 升序返回。
   // ----------------------------------------------------------
   async trend(
-    q: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo'> & { granularity: 'day' | 'month' },
+    q: Pick<TxnQuery, 'accountIds' | 'timeFrom' | 'timeTo' | 'excludeProjects'> & {
+      granularity: 'day' | 'month';
+    },
   ): Promise<TrendPoint[]> {
     const where: string[] = [];
     const params: unknown[] = [];
@@ -159,6 +169,10 @@ export class StatsServiceImpl implements StatsService {
     if (q.timeTo !== undefined) {
       where.push(`time <= ?`);
       params.push(q.timeTo);
+    }
+    // 排除专项账户交易（日常口径）。
+    if (q.excludeProjects) {
+      where.push(`account_id NOT IN (SELECT id FROM account WHERE kind = 'project')`);
     }
 
     const rows = await this.adapter.all<{ time: number; type: string; amount: number }>(

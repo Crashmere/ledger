@@ -36,6 +36,10 @@ export const account = sqliteTable('account', {
   createdAt: integer('created_at').notNull(), // epoch ms
   updatedAt: integer('updated_at'), // v2: 最后修改 epoch ms（同步 LWW 用）
   deletedAt: integer('deleted_at'), // v2: 软删墓碑，非空=已删
+  kind: text('kind'), // v3: NULL/'normal'=普通；'project'=专项账户（统计默认排除）
+  periodStart: integer('period_start'), // v3: 专项时间段起（epoch ms）
+  periodEnd: integer('period_end'), // v3: 专项时间段止（epoch ms）
+  archivedAt: integer('archived_at'), // v3: 归档/结束标记（epoch ms），非空=已归档
 });
 
 // ------------------------------------------------------------
@@ -157,4 +161,4 @@ export type Setting = typeof setting.$inferSelect;
 
 // 建库/迁移时在每个连接执行，确保外键规则生效：
 export const ENABLE_FK = sql`PRAGMA foreign_keys = ON;`;
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;

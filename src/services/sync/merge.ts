@@ -20,16 +20,17 @@
 // setting（无版本列）：按 key 求并集，冲突时 base（本地）优先，保住本机偏好。
 //   注意：快照里本就不含 sync.github.*（凭据），此处不特殊处理。
 //
-// 兼容：容忍 v1 形状的行（缺 updated_at/deleted_at）——归一化时
-//   updated_at 回落到 created_at、deleted_at 视为 null，再参与合并。
-//   输出恒为 v2 形状（dbUserVersion=2）。
+// 兼容：容忍 v1/v2 形状的行（缺 updated_at/deleted_at 或缺 v3 account 列）——
+//   归一化时 updated_at 回落到 created_at、deleted_at 视为 null，
+//   v3 account 列（kind/period_*/archived_at）缺失时补 null（=普通账户）。
+//   输出恒为 v3 形状（dbUserVersion=3）。
 // ============================================================
 
 import type { BackupSnapshot } from '../backup/snapshot';
 import { SNAPSHOT_FORMAT_VERSION } from '../backup/snapshot';
 
-/** 合并输出的目标 DB 版本（软删 + 时间戳落地后的 schema 版本）。 */
-export const MERGED_DB_USER_VERSION = 2 as const;
+/** 合并输出的目标 DB 版本（软删+时间戳 v2、专项账户 v3 落地后的 schema 版本）。 */
+export const MERGED_DB_USER_VERSION = 3 as const;
 
 /** 一条快照行（snake_case 列，值可为任意标量）。 */
 type Row = Record<string, unknown>;
@@ -149,6 +150,13 @@ function normalizeVersionedRow(row: Row): Row {
   if (out.deleted_at === undefined) {
     out.deleted_at = null;
   }
+  // v3 account 列：v1/v2 快照缺这些列。归一为 null（=普通账户），
+  // 使跨版本快照在 snapshotDataEquals/LWW tie-break 时不因“缺列 vs 显式 null”误判。
+  // 非 account 行本就没有这些键，补 null 不改变其语义（对比时两侧同样补齐）。
+  if (out.kind === undefined) out.kind = null;
+  if (out.period_start === undefined) out.period_start = null;
+  if (out.period_end === undefined) out.period_end = null;
+  if (out.archived_at === undefined) out.archived_at = null;
   return out;
 }
 

@@ -115,7 +115,13 @@ async function loadStatic(): Promise<void> {
   balanceById.value = balMap;
 
   // 最早一笔（未软删）交易的本地年月，用于给「上一月」封底——只能切到有记录的月份。
-  const [earliest] = await txnService.query({ sortBy: 'time', sortDir: 'asc', limit: 1 });
+  // 排除专项账户交易：概览是日常口径，月份导航下界不应被专项旧交易拉长。
+  const [earliest] = await txnService.query({
+    sortBy: 'time',
+    sortDir: 'asc',
+    limit: 1,
+    excludeProjects: true,
+  });
   if (earliest) {
     const d = new Date(earliest.time);
     earliestMonthIndex.value = d.getFullYear() * 12 + d.getMonth();
@@ -124,11 +130,11 @@ async function loadStatic(): Promise<void> {
   }
 }
 
-/** 随月份变化：三卡汇总 + 本月流水。 */
+/** 随月份变化：三卡汇总 + 本月流水。均排除专项账户交易（日常口径）。 */
 async function loadMonth(): Promise<void> {
   loading.value = true;
   try {
-    const q = { timeFrom: timeFrom.value, timeTo: timeTo.value };
+    const q = { timeFrom: timeFrom.value, timeTo: timeTo.value, excludeProjects: true };
     summary.value = await statsService.summary(q);
     txns.value = await txnService.query({
       ...q,

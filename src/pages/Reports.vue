@@ -140,6 +140,13 @@ const allCategories = ref<Category[]>([]);
 const tags = ref<Tag[]>([]);
 const categoryById = ref<Map<Id, Category>>(new Map());
 
+/** 账户 id → kind，用于判断是否显式选中了专项账户。 */
+const accountKindById = computed<Map<Id, Account['kind']>>(() => {
+  const m = new Map<Id, Account['kind']>();
+  for (const a of accounts.value) m.set(a.id, a.kind);
+  return m;
+});
+
 /** 分类按名去重，供「添加分类条件」列选项与 chip 展示。 */
 const uniqueCategoryNames = computed<string[]>(() => {
   const seen = new Set<string>();
@@ -197,6 +204,11 @@ const activeQuery = computed<TxnQuery>(() => {
   if (selectedTagIds.value.length > 0) q.tagIds = [...selectedTagIds.value];
   if (amountMinCents.value !== null) q.amountMin = amountMinCents.value;
   if (amountMaxCents.value !== null) q.amountMax = amountMaxCents.value;
+  // 专项账户默认排除在全页统计之外；仅当用户显式选中某个专项账户时，才把其数据纳入。
+  const selectingProject = selectedAccountIds.value.some(
+    (id) => accountKindById.value.get(id) === 'project',
+  );
+  if (!selectingProject) q.excludeProjects = true;
   return q;
 });
 
@@ -534,7 +546,7 @@ function clearAll(): void {
                     :class="{ sel: selectedAccountIds.includes(a.id) }"
                     @click="toggleAccount(a.id)"
                   >
-                    {{ a.name }}
+                    {{ a.name }}<span v-if="a.kind === 'project'" class="opt-tag">专项</span>
                   </button>
                 </template>
 
@@ -846,6 +858,15 @@ function clearAll(): void {
 .add-opt.sel::after {
   content: '✓';
   margin-left: 8px;
+}
+.opt-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-3, rgba(147, 52, 230, 0.14));
+  color: #9334e6;
 }
 .add-empty {
   padding: 8px 10px;

@@ -426,6 +426,117 @@ describe('StatsService.summary', () => {
 });
 
 // ------------------------------------------------------------
+// 专项账户（v3 kind='project'）：字段往返 + 全局统计默认排除
+// 攻击面：专项交易泄漏进日常收支/趋势/分类分布，或显式选专项时被误排除
+// ------------------------------------------------------------
+describe('专项账户 kind 与 excludeProjects 排除', () => {
+  it('create/get：kind/period/archived 字段往返一致', async () => {
+    const p = await accounts.create({
+      name: '云南之旅',
+      color: 1,
+      kind: 'project',
+      periodStart: 100,
+      periodEnd: 200,
+      includeInBalance: false,
+    });
+    expect(p.kind).toBe('project');
+    expect(p.periodStart).toBe(100);
+    expect(p.periodEnd).toBe(200);
+    expect(p.includeInBalance).toBe(false);
+
+    const got = await accounts.get(p.id);
+    expect(got?.kind).toBe('project');
+    expect(got?.periodStart).toBe(100);
+    expect(got?.periodEnd).toBe(200);
+    expect(got?.archivedAt).toBeNull();
+
+    // 普通账户 kind 归一为 'normal'（存储层存 NULL）
+    const n = await accounts.create({ name: '现金', color: 2 });
+    expect(n.kind).toBe('normal');
+    const nRow = await adapter.get<{ kind: string | null }>(
+      `SELECT kind FROM account WHERE id = ?`,
+      [n.id],
+    );
+    expect(nRow?.kind).toBeNull();
+  });
+
+  it('update：普通账户可改成专项并写入时间段/归档', async () => {
+    const a = await accounts.create({ name: 'A', color: 1 });
+    const up = await accounts.update(a.id, {
+      kind: 'project',
+      periodStart: 10,
+      periodEnd: 20,
+      archivedAt: 30,
+    });
+    expect(up.kind).toBe('project');
+    expect(up.periodStart).toBe(10);
+    expect(up.archivedAt).toBe(30);
+    // 改回普通：存储层落 NULL
+    const back = await accounts.update(a.id, { kind: 'normal' });
+    expect(back.kind).toBe('normal');
+    const row = await adapter.get<{ kind: string | null }>(
+      `SELECT kind FROM account WHERE id = ?`,
+      [a.id],
+    );
+    expect(row?.kind).toBeNull();
+  });
+
+  it('txn.query excludeProjects：默认收全部，置位后排除专项账户交易（含转账两端）', async () => {
+    const normal = await accounts.create({ name: '日常', color: 1 });
+    const proj = await accounts.create({ name: '旅行', color: 2, kind: 'project' });
+
+    await txns.create({ type: 'expense', amount: 100, accountId: normal.id });
+    await txns.create({ type: 'expense', amount: 300, accountId: proj.id });
+    // 从日常转入专项：转账一端命中专项，excludeProjects 时应排除
+    await txns.create({ type: 'transfer', amount: 50, accountId: normal.id, toAccountId: proj.id });
+
+    expect(await txns.query({})).toHaveLength(3);
+    const filtered = await txns.query({ excludeProjects: true });
+    // 只剩那笔纯日常支出
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].accountId).toBe(normal.id);
+    expect(filtered[0].type).toBe('expense');
+  });
+
+  it('stats.summary/breakdown/trend excludeProjects：专项支出不进日常口径', async () => {
+    const normal = await accounts.create({ name: '日常', color: 1 });
+    const proj = await accounts.create({ name: '旅行', color: 2, kind: 'project' });
+    const catN = await categories.create({ accountId: normal.id, name: '餐饮', color: 1 });
+    const catP = await categories.create({ accountId: proj.id, name: '住宿', color: 1 });
+
+    await txns.create({ type: 'expense', amount: 100, accountId: normal.id, categoryId: catN.id, time: 1000 });
+    await txns.create({ type: 'expense', amount: 900, accountId: proj.id, categoryId: catP.id, time: 1000 });
+
+    // 不排除：支出合计 1000
+    expect((await stats.summary()).expense).toBe(1000);
+    // 排除专项：只剩 100
+    expect((await stats.summary({ excludeProjects: true })).expense).toBe(100);
+
+    // 分类分布：排除后不含「住宿」
+    const bd = await stats.breakdownByCategory({ excludeProjects: true });
+    expect(bd.map((r) => r.categoryName)).not.toContain('住宿');
+    expect(bd.reduce((s, r) => s + r.amount, 0)).toBe(100);
+
+    // 趋势：排除后支出合计只剩 100
+    const tr = await stats.trend({ granularity: 'day', excludeProjects: true });
+    expect(tr.reduce((s, p) => s + p.expense, 0)).toBe(100);
+  });
+
+  it('显式选中专项账户 accountIds 时不排除：能查看该专项自身数据', async () => {
+    const normal = await accounts.create({ name: '日常', color: 1 });
+    const proj = await accounts.create({ name: '旅行', color: 2, kind: 'project' });
+    await txns.create({ type: 'expense', amount: 900, accountId: proj.id });
+
+    // 报告页语义：显式选中专项账户时不传 excludeProjects，仍能按 accountIds 命中
+    const rows = await txns.query({ accountIds: [proj.id] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].accountId).toBe(proj.id);
+    expect((await stats.summary({ accountIds: [proj.id] })).expense).toBe(900);
+    void normal;
+  });
+});
+
+// ------------------------------------------------------------
 // SettingService
 // ------------------------------------------------------------
 describe('SettingService', () => {

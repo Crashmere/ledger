@@ -9,6 +9,7 @@ import type { Migrator, SqliteAdapter } from '../adapter';
 import { SCHEMA_VERSION } from '../schema';
 import { DDL_V1 } from './ddl_v1';
 import { DDL_V2 } from './ddl_v2';
+import { DDL_V3 } from './ddl_v3';
 
 /** 逐条拆分 DDL 脚本为独立语句（adapter.run 一次执行一条）。 */
 function splitStatements(script: string): string[] {
@@ -51,6 +52,17 @@ export const migrator: Migrator = {
         }
       });
       await db.setUserVersion(2);
+    }
+
+    // v2 -> v3：为「专项账户」加 kind/period_start/period_end/archived_at（均可空）+ 索引。
+    // 全部可空、无需回填（存量行 kind IS NULL 即普通账户）；整体入事务，失败回滚。
+    if (current < 3) {
+      await db.transaction(async (tx) => {
+        for (const stmt of splitStatements(DDL_V3)) {
+          await tx.run(stmt);
+        }
+      });
+      await db.setUserVersion(3);
     }
   },
 };

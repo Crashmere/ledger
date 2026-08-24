@@ -128,6 +128,10 @@ export function importLegacyBackup(data: LegacyBackup, now: EpochMs = Date.now()
     includeInBalance: true, // 默认计入
     orderNum: a.orderNum ?? i, // 旧数据无 orderNum -> 数组序
     createdAt: now, // 旧数据无创建时间 -> 合成
+    kind: 'normal', // 旧数据均为普通账户
+    periodStart: null,
+    periodEnd: null,
+    archivedAt: null,
   }));
 
   // ---- 3. 分类（补上反向构建的 account_id）----
@@ -260,8 +264,8 @@ export async function persistImport(
 
     for (const a of r.accounts) {
       await tx.run(
-        `${verb} account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at)
-         VALUES(?,?,?,?,?,?,?,?,?,NULL)`,
+        `${verb} account(id,name,color,icon,initial_balance,include_in_balance,order_num,created_at,updated_at,deleted_at,kind,period_start,period_end,archived_at)
+         VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)`,
         [
           a.id,
           a.name,

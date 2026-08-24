@@ -137,11 +137,11 @@ describe('迁移 v1 -> v2', () => {
   });
   afterEach(() => a.close());
 
-  it('升级后 user_version = 最新（2）', async () => {
+  it('升级后 user_version = 最新', async () => {
     expect(await a.getUserVersion()).toBe(1);
     await migrator.migrateToLatest(a);
     expect(await a.getUserVersion()).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(2);
+    expect(SCHEMA_VERSION).toBe(3);
   });
 
   it('四表都新增了 updated_at / deleted_at 列', async () => {
@@ -187,5 +187,47 @@ describe('迁移 v1 -> v2', () => {
     // 列不会被加两次（ADD COLUMN 若重复会报错，能跑到这里即证明已被 user_version 守卫拦住）。
     const cols = await a.all<{ name: string }>(`PRAGMA table_info(txn)`);
     expect(cols.filter((c) => c.name === 'updated_at')).toHaveLength(1);
+  });
+});
+
+describe('迁移 v1 -> v3（专项账户列）', () => {
+  let a: V1OnlyAdapter;
+  beforeEach(async () => {
+    a = new V1OnlyAdapter();
+    await a.init(); // 只到 v1
+    await seedV1(a);
+  });
+  afterEach(() => a.close());
+
+  it('account 新增 kind/period_start/period_end/archived_at 列', async () => {
+    await migrator.migrateToLatest(a);
+    const cols = await a.all<{ name: string }>(`PRAGMA table_info(account)`);
+    const names = cols.map((c) => c.name);
+    expect(names).toContain('kind');
+    expect(names).toContain('period_start');
+    expect(names).toContain('period_end');
+    expect(names).toContain('archived_at');
+  });
+
+  it('存量账户行 kind 回填为 NULL（即普通账户）', async () => {
+    await migrator.migrateToLatest(a);
+    const acc = await a.get<{ kind: string | null; archived_at: number | null }>(
+      `SELECT kind, archived_at FROM account WHERE id='acc-1'`,
+    );
+    expect(acc!.kind).toBeNull();
+    expect(acc!.archived_at).toBeNull();
+  });
+
+  it('kind 上建了索引 idx_account_kind', async () => {
+    await migrator.migrateToLatest(a);
+    const idx = await a.all<{ name: string }>(`PRAGMA index_list(account)`);
+    expect(idx.map((i) => i.name)).toContain('idx_account_kind');
+  });
+
+  it('幂等：重复迁移不会重复加 kind 列', async () => {
+    await migrator.migrateToLatest(a);
+    await migrator.migrateToLatest(a);
+    const cols = await a.all<{ name: string }>(`PRAGMA table_info(account)`);
+    expect(cols.filter((c) => c.name === 'kind')).toHaveLength(1);
   });
 });

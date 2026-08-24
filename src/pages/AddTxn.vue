@@ -667,6 +667,7 @@ onUnmounted(() => {
               >
                 <span class="ic-tile sm dot" :style="{ background: argbToCss(a.color) }" />
                 {{ a.name }}
+                <span v-if="a.kind === 'project'" class="opt-tag">专项</span>
               </button>
             </div>
           </div>
@@ -1140,6 +1141,15 @@ onUnmounted(() => {
 .popover-item.on {
   background: var(--primary-soft);
   color: var(--primary);
+}
+.opt-tag {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(147, 52, 230, 0.14);
+  color: #9334e6;
 }
 .popover-empty {
   padding: 10px;

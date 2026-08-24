@@ -237,9 +237,9 @@ describe('v1 快照兼容', () => {
     expect(merged.tables.txn[0].deleted_at ?? null).toBeNull();
   });
 
-  it('输出恒为 v2（dbUserVersion=2）', () => {
+  it('输出恒为 v3（dbUserVersion=3）', () => {
     const { merged } = mergeSnapshots(snap({}), snap({}));
-    expect(merged.dbUserVersion).toBe(2);
+    expect(merged.dbUserVersion).toBe(3);
   });
 });
 

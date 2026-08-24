@@ -7,7 +7,7 @@
 //     据此在 remove 里转成 AppError('RESTRICT', …)。
 // ============================================================
 
-import type { Account, Category, Tag, Txn, TxnType } from './contract';
+import type { Account, AccountKind, Category, Tag, Txn, TxnType } from './contract';
 
 /** 从错误 message 判断是否外键约束失败（RESTRICT/被引用而不能删）。 */
 export function isForeignKeyError(err: unknown): boolean {
@@ -27,6 +27,15 @@ export interface AccountRow {
   include_in_balance: number; // 0/1
   order_num: number;
   created_at: number;
+  kind: string | null; // v3: NULL=普通
+  period_start: number | null; // v3
+  period_end: number | null; // v3
+  archived_at: number | null; // v3
+}
+
+/** 把存储层的 kind（可能为 NULL 或历史脏值）归一为领域枚举。 */
+export function normalizeAccountKind(kind: string | null | undefined): AccountKind {
+  return kind === 'project' ? 'project' : 'normal';
 }
 
 export function rowToAccount(r: AccountRow): Account {
@@ -39,6 +48,10 @@ export function rowToAccount(r: AccountRow): Account {
     includeInBalance: r.include_in_balance === 1,
     orderNum: r.order_num,
     createdAt: r.created_at,
+    kind: normalizeAccountKind(r.kind),
+    periodStart: r.period_start ?? null,
+    periodEnd: r.period_end ?? null,
+    archivedAt: r.archived_at ?? null,
   };
 }
 
