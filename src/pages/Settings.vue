@@ -269,9 +269,6 @@ const savingCfg = ref(false);
 const cfgMsg = ref('');
 const cfgError = ref('');
 
-/** 展示用的内置仓库标识（owner/repo，来自已加载配置）。 */
-const repoLabel = computed(() => `${cfgForm.value.owner}/${cfgForm.value.repo}`);
-
 const testing = ref(false);
 const testMsg = ref('');
 const testOk = ref<boolean | null>(null);
@@ -811,17 +808,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
         </div>
 
         <div class="card-pad" style="padding-top: 14px">
-          <!-- 说明条 -->
-          <div class="note-box">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
-              <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
-            </svg>
-            <span>
-              选择旧应用导出的备份 JSON，先预览将导入的范围，确认后再写入本机数据库。
-              <b>借贷、预算、多币种、汇率、旧设置与标签不迁移。</b>
-            </span>
-          </div>
-
           <!-- 选文件区 -->
           <div
             class="dropzone"
@@ -1011,18 +997,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
           <span class="faint" style="font-size: 13px">Contents API</span>
         </div>
         <div class="card-pad" style="padding-top: 14px">
-          <div class="note-box" style="margin-bottom: 16px">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
-              <circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" />
-            </svg>
-            <span>
-              备份仓库已内置为 <b class="num">{{ repoLabel }}</b>，无需在此配置。
-              新设备只需粘贴一次 <b>Token</b> 即可备份 / 恢复。建议使用
-              <b>fine-grained PAT</b>，权限最小化（只授予<b>目标单仓</b>的 <b>Contents 读写</b>），便于随时吊销。
-              Token 仅存于本机、不写入任何快照。
-            </span>
-          </div>
-
           <div class="form-grid">
             <div class="field field-full">
               <label class="field-label">
@@ -1067,17 +1041,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
           <span class="faint" style="font-size: 13px">多设备安全同步</span>
         </div>
         <div class="card-pad" style="padding-top: 14px">
-          <div class="note-box" style="margin-bottom: 16px">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
-              <path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.8 1 6.4 2.7L21 8" /><path d="M21 3v5h-5" />
-            </svg>
-            <span>
-              同步会先拉取云端、与本机<b>逐条合并（谁的都不丢）</b>，再带乐观锁推回。
-              多台设备各自新增也不会互相覆盖。App 启动时会自动同步一次，记账后也会<b>自动在后台同步</b>；
-              此处的按钮用于手动立即触发。
-            </span>
-          </div>
-
           <div class="dl" style="margin-bottom: 14px">
             <span class="dl-k">上次同步</span>
             <span class="dl-v num">
@@ -1169,17 +1132,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
           <span class="faint" style="font-size: 13px">直连本地数据库</span>
         </div>
         <div class="card-pad" style="padding-top: 14px">
-          <!-- 说明条 -->
-          <div class="note-box" style="margin-bottom: 14px">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink: 0; margin-top: 1px">
-              <path d="M12 9v4M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-            </svg>
-            <span>
-              直接对本地数据库执行 SQL。只读查询直接运行；<b>写操作不可撤销，请谨慎操作</b>，
-              执行前会二次确认并可一键导出备份。金额单位为「分」，此处原样显示、不做换算。
-            </span>
-          </div>
-
           <!-- 表结构速查 -->
           <div class="sec-title" style="font-size: 12px; color: var(--fg-3); margin-bottom: 8px">表结构速查</div>
           <div class="chip-row">
@@ -1417,22 +1369,6 @@ function onSettingsKeydown(e: KeyboardEvent): void {
 </template>
 
 <style scoped>
-/* 说明条：与设计稿 primary-soft 提示块一致。 */
-.note-box {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  background: var(--primary-soft);
-  color: var(--primary);
-  border-radius: var(--r-md);
-  padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.note-box b {
-  font-weight: 700;
-}
-
 /* 选文件拖拽区 */
 .dropzone {
   display: flex;
