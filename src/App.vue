@@ -12,9 +12,15 @@
 import { computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ToastHost from './components/ToastHost.vue';
+import { useAutoSync } from './composables/useAutoSync';
 
 const route = useRoute();
 const router = useRouter();
+
+// 自动同步开关（侧栏底部）：连续慢慢录入多笔时可临时关闭后台自动推送，
+//   录完再打开一次性补推，避免 GitHub 对同一文件高频提交触发限流/409。
+//   状态与持久化都在 useAutoSync；这里只读值 + 切换。
+const { enabled: autoSyncEnabled, toggle: toggleAutoSync } = useAutoSync();
 
 // 手机端记一笔/编辑页返回：有历史则回退，否则兜底回概览（避免直达 /add 时退无可退）。
 function goBack(): void {
@@ -138,6 +144,28 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
           {{ item.label }}
         </RouterLink>
       </nav>
+
+      <!-- 自动同步开关：置于导航列最底部。连续慢慢录入多笔时可临时关闭后台自动推送，
+           录完再打开一次性补推，避免频繁提交触发 GitHub 限流。纯桌面侧栏元素，
+           手机端 .sidebar 整体 display:none，故不影响手机布局。 -->
+      <div class="nav-autosync">
+        <button
+          class="nav-autosync-row"
+          role="switch"
+          :aria-checked="autoSyncEnabled"
+          :title="autoSyncEnabled ? '自动同步已开启，点击暂停' : '自动同步已暂停，点击开启'"
+          @click="toggleAutoSync"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.5-4M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.5 4" />
+            <path d="M21 3v5h-5M3 21v-5h5" />
+          </svg>
+          <span class="nav-autosync-label">自动同步</span>
+          <span class="switch switch-sm" :class="{ on: autoSyncEnabled }" aria-hidden="true">
+            <span class="knob"></span>
+          </span>
+        </button>
+      </div>
     </aside>
 
     <!-- 主区 -->

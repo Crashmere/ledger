@@ -6,6 +6,7 @@ import { initDb } from './db/client';
 import { seedIfEmpty } from './db/seed';
 import { runStartupSync, type SyncResult } from './services/sync';
 import { startAutoSync } from './services/sync/scheduler';
+import { initialAutoSyncEnabled, registerAutoSyncHandle } from './composables/useAutoSync';
 import { pushToast } from './composables/useToast';
 import { registerSW } from 'virtual:pwa-register';
 import './styles/base.css';
@@ -51,10 +52,13 @@ async function bootstrap(): Promise<void> {
   await seedIfEmpty();
   await runStartupSync();
   createApp(App).use(createPinia()).use(router).mount('#app');
-  startAutoSync({
+  const handle = startAutoSync({
+    enabled: initialAutoSyncEnabled(),
     onResult: (r) => toastAutoSync(r as SyncResult),
     onError: () => pushToast('error', '同步失败，请检查网络或 Token。'),
   });
+  // 把调度器句柄登记给「自动同步」开关（侧栏底部），使开关能真正开/关后台推送。
+  registerAutoSyncHandle(handle);
 }
 
 void bootstrap();

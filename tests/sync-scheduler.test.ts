@@ -183,3 +183,73 @@ describe('自动同步调度器 · 最小同步间隔节流', () => {
     handle.stop();
   });
 });
+
+describe('自动同步调度器 · 开关（setEnabled）', () => {
+  it('关闭时变更不触发后台同步；重开后按防抖补推一次', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, trigger });
+
+    handle.setEnabled(false);
+    emitDataChanged();
+    emitDataChanged();
+    vi.advanceTimersByTime(10000);
+    expect(trigger).not.toHaveBeenCalled(); // 关闭期间不推
+
+    handle.setEnabled(true); // 重开：关闭期间有改动 → 安排一次补推
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(1);
+
+    handle.stop();
+  });
+
+  it('重开时若关闭期间无任何变更，则不补推', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, trigger });
+
+    handle.setEnabled(false);
+    handle.setEnabled(true); // 期间无变更
+    vi.advanceTimersByTime(10000);
+    expect(trigger).not.toHaveBeenCalled();
+
+    handle.stop();
+  });
+
+  it('运行中关闭 → 撤掉已排的防抖推送', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, trigger });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(1000); // 防抖窗口进行中
+    handle.setEnabled(false); // 关闭：撤掉计时器
+    vi.advanceTimersByTime(5000);
+    expect(trigger).not.toHaveBeenCalled();
+
+    handle.stop();
+  });
+
+  it('enabled:false 初始 → 变更不触发，直到 setEnabled(true)', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, enabled: false, trigger });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(10000);
+    expect(trigger).not.toHaveBeenCalled();
+
+    handle.setEnabled(true);
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(1);
+
+    handle.stop();
+  });
+
+  it('关闭状态下 flush() 仍强制触发（手动同步不受开关约束）', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, enabled: false, trigger });
+
+    emitDataChanged();
+    handle.flush();
+    expect(trigger).toHaveBeenCalledTimes(1);
+
+    handle.stop();
+  });
+});

@@ -28,6 +28,13 @@ export interface AutoSyncHandle {
   stop(): void;
   /** 立即触发（跳过防抖与最小间隔等待），用于"手动同步"按钮或测试。 */
   flush(): void;
+  /**
+   * 开/关自动同步（对应侧栏「自动同步」开关）。
+   *   - 关：撤掉已排的后台推送；关闭期间的写库变更被累积、不触发同步。
+   *   - 开：若关闭期间有过变更，按正常防抖安排一次补推，把攒下的改动一并推上去。
+   * 只影响后台自动推送；不影响启动同步与「立即同步」按钮。
+   */
+  setEnabled(on: boolean): void;
 }
 
 export interface AutoSyncOptions {
@@ -35,6 +42,8 @@ export interface AutoSyncOptions {
   debounceMs?: number;
   /** 最小同步间隔毫秒，默认 MIN_SYNC_INTERVAL_MS；设 0 关闭节流（仅防抖）。 */
   minIntervalMs?: number;
+  /** 初始是否启用自动同步（默认 true）。UI 开关经 handle.setEnabled 动态切换。 */
+  enabled?: boolean;
   /** 触发时执行的同步动作（默认 syncNow）。测试可注入桩。 */
   trigger?: () => Promise<unknown>;
   /**
@@ -80,6 +89,10 @@ export function createAutoSync(opts: AutoSyncOptions = {}): AutoSyncHandle {
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** 上次实际触发同步的时刻（epoch ms）；-Infinity 表示尚未同步过。 */
   let lastRunAt = -Infinity;
+  /** 是否启用后台自动推送。关闭时变更被累积到 pendingWhileDisabled，重开时补推一次。 */
+  let enabled = opts.enabled ?? true;
+  /** 关闭期间是否发生过写库变更（重开时据此决定要不要补推）。 */
+  let pendingWhileDisabled = false;
 
   const runTrigger = (): void => {
     lastRunAt = now();
@@ -129,6 +142,11 @@ export function createAutoSync(opts: AutoSyncOptions = {}): AutoSyncHandle {
   };
 
   const schedule = (): void => {
+    // 自动同步关闭：不排后台推送，只记下"关闭期间有改动"，等重开时补推。
+    if (!enabled) {
+      pendingWhileDisabled = true;
+      return;
+    }
     if (timer) clearTimeout(timer);
     timer = setTimeout(onDebounceElapsed, debounceMs);
   };
@@ -149,6 +167,23 @@ export function createAutoSync(opts: AutoSyncOptions = {}): AutoSyncHandle {
         timer = null;
       }
       runTrigger();
+    },
+    setEnabled(on: boolean) {
+      if (on === enabled) return;
+      enabled = on;
+      if (!on) {
+        // 关：撤掉已排的后台推送（正在跑的那轮由 syncNow 合流自行收尾）。
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
+      }
+      // 开：关闭期间攒了改动 → 按正常防抖安排一次补推，把攒下的一并推上去。
+      if (pendingWhileDisabled) {
+        pendingWhileDisabled = false;
+        schedule();
+      }
     },
   };
 }
