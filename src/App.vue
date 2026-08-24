@@ -22,15 +22,23 @@ function goBack(): void {
   else void router.push('/overview');
 }
 
-// 全局快捷键 ⌘N（Windows/Linux：Ctrl+N）→ 打开记一笔。
+// 全局快捷键 Alt+N（Mac：Option+N）→ 打开记一笔。
 //   若当前在账户页且已选中某账户（URL query.account），则带 ?account=<id> 进入，
 //   记一笔会把该账户预选为默认（见 AddTxn.initCreate）。
-//   注意：浏览器普通标签页里 Ctrl/⌘+N 是「新建窗口」的保留快捷键，preventDefault 未必拦得住；
-//   PWA standalone 独立窗口下可正常生效。已在 add/编辑 页时不重复跳转。
+//   为何用 Alt 而非 ⌘/Ctrl：Ctrl/⌘+N 是浏览器「新建窗口」保留键，普通标签页里拦不住。
+//   为何看 e.code 而非 e.key：Mac 上 Option+N 是组合变音死键（用来打 ñ/õ），
+//   e.key 会变成 'Dead' 而不是 'n'，只有物理键 e.code==='KeyN' 才可靠且跨键盘布局。
+//   在输入框/可编辑区内不拦截，避免打断 Mac 用 Option+N 输入重音字符。已在 add 页不重复跳转。
+function isEditableTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
 function onGlobalKeydown(e: KeyboardEvent): void {
-  const mod = e.metaKey || e.ctrlKey;
-  if (!mod || e.altKey || e.shiftKey) return;
-  if (e.key.toLowerCase() !== 'n') return;
+  if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  if (e.code !== 'KeyN') return;
+  if (isEditableTarget(e.target)) return;
   e.preventDefault();
   if (route.name === 'add') return;
   const q =
@@ -49,6 +57,11 @@ onUnmounted(() => {
 
 // 顶栏标题：优先用路由 meta.title，兜底用"记账"。
 const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '记账');
+
+// 记一笔快捷键提示文案：Mac 显示 ⌥N（Option），其余平台显示 Alt+N。仅桌面端可见。
+const addShortcutLabel = computed(() =>
+  /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? '⌥N' : 'Alt+N',
+);
 
 // S11：记一笔/编辑属"专注录入"流程（头号红线：手机单屏无滚动）。
 // 在这两个路由下，手机底栏 tab + FAB 收起（对齐 add.html 手机稿的全屏无底栏形态），
@@ -93,7 +106,7 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
           <path d="M12 5v14M5 12h14" />
         </svg>
         记一笔
-        <span class="nav-add-kbd" aria-hidden="true"><span class="kbd">⌘N</span></span>
+        <span class="nav-add-kbd" aria-hidden="true"><span class="kbd">{{ addShortcutLabel }}</span></span>
       </RouterLink>
 
       <nav class="nav-list">

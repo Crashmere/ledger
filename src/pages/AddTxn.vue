@@ -510,8 +510,8 @@ function resetFormState(): void {
 }
 
 /** 新建模式的智能默认：类型=支出（初值即是）、账户=上次使用、日期=今天。
- *  例外：若 URL query 带 ?account=<id>（⌘N 从账户页带入），且该账户有效，
- *  则优先用它，方便「在某账户页按 ⌘N 直接记该账户的一笔」。 */
+ *  例外：若 URL query 带 ?account=<id>（Alt+N 从账户页带入），且该账户有效，
+ *  则优先用它，方便「在某账户页按 Alt+N 直接记该账户的一笔」。 */
 async function initCreate(): Promise<void> {
   const q = route.query.account;
   const qAccount = typeof q === 'string' && q ? q : null;

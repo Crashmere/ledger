@@ -142,7 +142,7 @@ svg { display: block; }
 /* 输入框已有自带聚焦样式（.input:focus），不再叠描边免重影。 */
 .input:focus-visible, .note-inline input:focus-visible, textarea:focus-visible { outline: none; }
 
-/* 桌面端快捷键小提示（如「← →」「⌘N」）：极轻量、不占大块空间。
+/* 桌面端快捷键小提示（如「← →」「⌥N」）：极轻量、不占大块空间。
    手机端（≤720px）整体隐藏（见 S11 段），仅电脑端展示。 */
 .kbd {
   display: inline-flex; align-items: center; justify-content: center;
@@ -176,7 +176,7 @@ svg { display: block; }
   box-shadow: var(--sh-2); margin-bottom: 16px; width: 100%;
 }
 .nav-add:hover { background: var(--primary-strong); }
-/* 侧栏「记一笔」按钮的 ⌘N 提示：右侧极淡小键帽，反白底以适配蓝底按钮。 */
+/* 侧栏「记一笔」按钮的 ⌥N 提示：右侧极淡小键帽，反白底以适配蓝底按钮。 */
 .nav-add-kbd { margin-left: 4px; display: inline-flex; }
 .nav-add-kbd .kbd {
   color: var(--primary-fg); background: rgba(255, 255, 255, 0.18);
