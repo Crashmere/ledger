@@ -82,6 +82,29 @@ function mkRes(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+/** 带响应头的 Response-like（限流用例：Retry-After）。 */
+function mkResWithHeaders(status: number, body: unknown, headers: Record<string, string>): Response {
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+  } as unknown as Response;
+}
+
+/** 测试用：不真实等待的 sleep，同时记录每次退避时长。 */
+function makeSpySleep(): { sleep: (ms: number) => Promise<void>; waits: number[] } {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+    },
+  };
+}
+
 let local: BetterSqliteAdapter;
 
 beforeEach(async () => {
@@ -184,12 +207,67 @@ describe('syncNow 编排', () => {
     };
     vi.stubGlobal('fetch', remote.makeFetch());
 
-    const res = await syncNow({ adapter: local, config: CFG });
+    const { sleep, waits } = makeSpySleep();
+    const res = await syncNow({ adapter: local, config: CFG, sleep, random: () => 0 });
     expect(res.status).toBe('pushed');
     expect(res.retries).toBeGreaterThanOrEqual(1); // 至少重试过一次
+    expect(waits.length).toBeGreaterThanOrEqual(1); // 重试前退避等待过
+    expect(waits[0]).toBe(500); // 首次退避 = RETRY_BASE_MS（random=0 无抖动）
     // 最终远端仍含本地那笔支出（没因冲突丢失）。
     const parsed = JSON.parse(remote.content!);
     expect(parsed.tables.txn.some((t: { amount: number }) => t.amount === 100)).toBe(true);
+  });
+
+  it('限流（403 二级限流）→ 尊重 Retry-After 退避后重试成功', async () => {
+    const acc = await new AccountServiceImpl(local).create({ name: '现金', color: 1 });
+    await new TxnServiceImpl(local).create({ type: 'expense', amount: 42, accountId: acc.id });
+
+    const seed = await exportSnapshot(await makeTestAdapter());
+    const remote = new FakeRemote(serializeSnapshot(seed));
+    const realFetch = remote.makeFetch();
+
+    // 第一次 PUT 返回 403 二级限流（含 Retry-After: 5s），其余走真实假远端。
+    let put403Once = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'PUT' && !put403Once) {
+        put403Once = true;
+        return mkResWithHeaders(
+          403,
+          { message: 'You have exceeded a secondary rate limit' },
+          { 'Retry-After': '5' },
+        );
+      }
+      return realFetch(url, init);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { sleep, waits } = makeSpySleep();
+    const res = await syncNow({ adapter: local, config: CFG, sleep, random: () => 0 });
+    expect(res.status).toBe('pushed');
+    expect(res.retries).toBeGreaterThanOrEqual(1);
+    expect(waits).toContain(5000); // 尊重 Retry-After=5s
+  });
+
+  it('持续 409 超过上限 → error「过于频繁」，且退避有限次不真实等待', async () => {
+    const acc = await new AccountServiceImpl(local).create({ name: '现金', color: 1 });
+    await new TxnServiceImpl(local).create({ type: 'expense', amount: 7, accountId: acc.id });
+
+    const seed = await exportSnapshot(await makeTestAdapter());
+    const remote = new FakeRemote(serializeSnapshot(seed));
+    // 每次 PUT 前都改远端 → 每轮必 409，永不成功。
+    remote.onBeforePut = () => {
+      remote.setContent(remote.content! + '\n');
+    };
+    vi.stubGlobal('fetch', remote.makeFetch());
+
+    const { sleep, waits } = makeSpySleep();
+    const res = await syncNow({ adapter: local, config: CFG, sleep, random: () => 0 });
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('过于频繁');
+    // MAX_RETRIES=4：共 5 轮尝试，最后一轮不再退避 → 退避 4 次。
+    expect(waits.length).toBe(4);
+    // 指数退避序列（random=0）：500,1000,2000,4000。
+    expect(waits).toEqual([500, 1000, 2000, 4000]);
   });
 
   it('远端文件损坏（非本应用 JSON）→ error，绝不覆盖远端', async () => {

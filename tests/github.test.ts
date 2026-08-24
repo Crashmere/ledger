@@ -37,6 +37,18 @@ function mkRes(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+/** 造一个带响应头的 Response-like 对象（限流用例：Retry-After / x-ratelimit-*）。 */
+function mkResWithHeaders(status: number, body: unknown, headers: Record<string, string>): Response {
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+  } as unknown as Response;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -182,6 +194,81 @@ describe('putRemoteFile', () => {
         putRemoteFile(CFG, 'x', 'm', { expectedSha: 'STALE' }),
       ).rejects.toMatchObject({ status: 409 });
       expect(fetchMock).toHaveBeenCalledTimes(1); // 未做内部 GET
+    });
+  });
+
+  describe('限流元信息（rateLimited / retryAfterMs）', () => {
+    it('429 + Retry-After → 标记限流并给出等待毫秒', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          mkResWithHeaders(429, { message: 'Too Many Requests' }, { 'Retry-After': '30' }),
+        ),
+      );
+      try {
+        await putRemoteFile(CFG, 'x', 'm', { expectedSha: 'S' });
+        throw new Error('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(GithubError);
+        expect((e as GithubError).status).toBe(429);
+        expect((e as GithubError).rateLimited).toBe(true);
+        expect((e as GithubError).retryAfterMs).toBe(30_000);
+      }
+    });
+
+    it('403 二级限流（报文含 secondary rate limit）→ 标记限流', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(
+            mkResWithHeaders(403, { message: 'You have exceeded a secondary rate limit' }, {}),
+          ),
+      );
+      try {
+        await putRemoteFile(CFG, 'x', 'm', { expectedSha: 'S' });
+        throw new Error('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(GithubError);
+        expect((e as GithubError).rateLimited).toBe(true);
+      }
+    });
+
+    it('403 普通无权限（报文不含限流字样）→ 不标记限流', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(mkResWithHeaders(403, { message: 'Forbidden' }, {})),
+      );
+      try {
+        await putRemoteFile(CFG, 'x', 'm', { expectedSha: 'S' });
+        throw new Error('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(GithubError);
+        expect((e as GithubError).rateLimited).toBeFalsy();
+      }
+    });
+
+    it('429 + x-ratelimit-remaining=0/reset → 用 reset 时刻算等待毫秒', async () => {
+      const resetSec = Math.floor(Date.now() / 1000) + 20; // 20s 后重置
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(
+          mkResWithHeaders(
+            429,
+            { message: 'rate limit' },
+            { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetSec) },
+          ),
+        ),
+      );
+      try {
+        await putRemoteFile(CFG, 'x', 'm', { expectedSha: 'S' });
+        throw new Error('should have thrown');
+      } catch (e) {
+        expect((e as GithubError).rateLimited).toBe(true);
+        // 允许些许时钟误差窗口。
+        expect((e as GithubError).retryAfterMs).toBeGreaterThan(15_000);
+        expect((e as GithubError).retryAfterMs).toBeLessThanOrEqual(20_000);
+      }
     });
   });
 });

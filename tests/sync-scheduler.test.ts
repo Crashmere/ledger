@@ -38,9 +38,10 @@ describe('自动同步调度器', () => {
     handle.stop();
   });
 
-  it('两批变更（各自静默满窗口）→ 触发两次', () => {
+  it('两批变更（各自静默满窗口，无最小间隔节流）→ 触发两次', () => {
     const trigger = vi.fn().mockResolvedValue(undefined);
-    const handle = createAutoSync({ debounceMs: 3000, trigger });
+    // minIntervalMs: 0 关闭节流，只验证纯防抖：两批各自静默满窗口 → 两次。
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 0, trigger });
 
     emitDataChanged();
     vi.advanceTimersByTime(3000);
@@ -115,6 +116,70 @@ describe('自动同步调度器', () => {
     await expect(vi.runAllTimersAsync()).resolves.not.toThrow();
 
     expect(onError).toHaveBeenCalledTimes(1);
+    handle.stop();
+  });
+});
+
+describe('自动同步调度器 · 最小同步间隔节流', () => {
+  it('逐笔慢记（间隔 > 防抖但 < 最小间隔）→ 被节流合并，而非每笔一次', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    // 防抖 3s、最小间隔 15s：模拟每 5s 记一笔的"慢速逐笔录入"。
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 15000, trigger });
+
+    // 第 1 笔：t=0 变更，t=3s 防抖到点，距上次同步(-∞)已满 → 立即触发第 1 次。
+    emitDataChanged();
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(1); // t=3s
+
+    // 第 2 笔：t=5s 变更 → t=8s 防抖到点，但距上次同步(3s)仅 5s < 15s → 推迟。
+    vi.advanceTimersByTime(2000); // t=5s
+    emitDataChanged();
+    vi.advanceTimersByTime(3000); // t=8s
+    expect(trigger).toHaveBeenCalledTimes(1); // 仍被冷却挡住
+
+    // 第 3 笔：t=10s 变更 → t=13s 防抖到点，冷却仍未满（距 3s 才 10s）→ 继续等。
+    vi.advanceTimersByTime(2000); // t=10s
+    emitDataChanged();
+    vi.advanceTimersByTime(3000); // t=13s
+    expect(trigger).toHaveBeenCalledTimes(1);
+
+    // 冷却在 t=18s 结束（上次 3s + 15s），到点一次性补跑第 2 次。
+    vi.advanceTimersByTime(5000); // t=18s
+    expect(trigger).toHaveBeenCalledTimes(2);
+
+    handle.stop();
+  });
+
+  it('距上次同步已超过最小间隔 → 防抖到点即触发（不额外等待）', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 15000, trigger });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(1); // t=3s
+
+    // 让时间走过冷却窗口后再记：应像正常防抖一样触发。
+    vi.advanceTimersByTime(20000); // t=23s，早已超过 15s 冷却
+    emitDataChanged();
+    vi.advanceTimersByTime(3000); // t=26s
+    expect(trigger).toHaveBeenCalledTimes(2);
+
+    handle.stop();
+  });
+
+  it('flush() 无视最小间隔，立即触发', () => {
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const handle = createAutoSync({ debounceMs: 3000, minIntervalMs: 15000, trigger });
+
+    emitDataChanged();
+    vi.advanceTimersByTime(3000);
+    expect(trigger).toHaveBeenCalledTimes(1); // t=3s
+
+    // 冷却期内手动 flush 应立刻同步，不受最小间隔约束。
+    emitDataChanged();
+    handle.flush();
+    expect(trigger).toHaveBeenCalledTimes(2);
+
     handle.stop();
   });
 });

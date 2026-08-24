@@ -42,14 +42,35 @@ export interface GithubConfig {
   token: string;
 }
 
-/** 友好的同步错误（message 面向用户，不含 Token）。 */
+/** GithubError 的附加元信息（限流退避用）。 */
+export interface GithubErrorMeta {
+  /** HTTP 状态码。 */
+  status?: number;
+  /** 服务端建议的重试等待毫秒（来自 Retry-After / x-ratelimit-reset）。 */
+  retryAfterMs?: number;
+  /** 是否属于限流（429，或 403 且报文含 rate limit）。用于编排层决定是否退避重试。 */
+  rateLimited?: boolean;
+}
+
+/**
+ * 友好的同步错误（message 面向用户，不含 Token）。
+ * 兼容旧调用：第二个参数既可传纯 status（number），也可传 GithubErrorMeta。
+ */
 export class GithubError extends Error {
-  constructor(
-    message: string,
-    public status?: number,
-  ) {
+  status?: number;
+  retryAfterMs?: number;
+  rateLimited?: boolean;
+
+  constructor(message: string, meta: number | GithubErrorMeta = {}) {
     super(message);
     this.name = 'GithubError';
+    if (typeof meta === 'number') {
+      this.status = meta;
+    } else {
+      this.status = meta.status;
+      this.retryAfterMs = meta.retryAfterMs;
+      this.rateLimited = meta.rateLimited;
+    }
   }
 }
 
@@ -118,9 +139,64 @@ function statusToMessage(status: number, apiMessage: string): string {
       return '无权限（检查 Token 是否具备该仓库的 Contents 读写权限，或触发了限流）。';
     case 409:
       return '远端已变化，请重试。';
+    case 429:
+      return '请求过于频繁，已被 GitHub 限流，请稍后重试。';
     default:
       return `请求失败（HTTP ${status}）${apiMessage ? `：${apiMessage}` : ''}`;
   }
+}
+
+/**
+ * 判断响应是否属于「限流」，并尽力算出建议等待毫秒：
+ *   - 429：一定是限流；
+ *   - 403 且报文含 "rate limit" / "abuse" / "secondary"：GitHub 的一/二级限流。
+ * 等待时长优先级：Retry-After（秒）> x-ratelimit-reset（epoch 秒）> 无。
+ * 头部读取全程防御式：测试桩的 Response 可能没有 headers。
+ */
+function rateLimitMeta(
+  res: Response,
+  apiMessage: string,
+): { rateLimited: boolean; retryAfterMs?: number } {
+  const status = res.status;
+  const msg = apiMessage.toLowerCase();
+  const looksRateLimited =
+    status === 429 ||
+    (status === 403 &&
+      (msg.includes('rate limit') || msg.includes('abuse') || msg.includes('secondary')));
+  if (!looksRateLimited) return { rateLimited: false };
+
+  const h = res.headers;
+  const get = (name: string): string | null =>
+    typeof h?.get === 'function' ? h.get(name) : null;
+
+  // Retry-After：秒数（GitHub 二级限流常用）。
+  const retryAfter = get('retry-after');
+  if (retryAfter != null) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs) && secs >= 0) return { rateLimited: true, retryAfterMs: secs * 1000 };
+  }
+  // x-ratelimit-reset：重置时刻（epoch 秒），仅当剩余额度为 0 时才有意义。
+  const remaining = get('x-ratelimit-remaining');
+  const reset = get('x-ratelimit-reset');
+  if (remaining === '0' && reset != null) {
+    const resetMs = Number(reset) * 1000;
+    if (Number.isFinite(resetMs)) {
+      const wait = resetMs - Date.now();
+      if (wait > 0) return { rateLimited: true, retryAfterMs: wait };
+    }
+  }
+  return { rateLimited: true };
+}
+
+/** 由非 2xx 响应构造 GithubError，并附带限流元信息（供编排层退避重试）。 */
+async function errorFromResponse(res: Response): Promise<GithubError> {
+  const apiMessage = await readMessage(res);
+  const { rateLimited, retryAfterMs } = rateLimitMeta(res, apiMessage);
+  return new GithubError(statusToMessage(res.status, apiMessage), {
+    status: res.status,
+    rateLimited,
+    retryAfterMs,
+  });
 }
 
 // ------------------------------------------------------------
@@ -136,8 +212,7 @@ export async function getRemoteFile(
   if (res.status === 404) return null;
 
   if (!res.ok) {
-    const msg = await readMessage(res);
-    throw new GithubError(statusToMessage(res.status, msg), res.status);
+    throw await errorFromResponse(res);
   }
 
   const body = (await res.json()) as { content?: string; sha?: string };
@@ -205,11 +280,10 @@ export async function putRemoteFile(
 
   if (res.ok) return; // 200/201
 
-  const msg = await readMessage(res);
   if (res.status === 404) {
     throw new GithubError('仓库或分支不存在（请检查 owner / repo / branch 是否正确）。', 404);
   }
-  throw new GithubError(statusToMessage(res.status, msg), res.status);
+  throw await errorFromResponse(res);
 }
 
 // ------------------------------------------------------------

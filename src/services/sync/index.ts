@@ -41,6 +41,12 @@ import { SYNC_KEYS } from '../backup/keys';
 /** 单轮同步中，乐观锁 409 冲突后的最大整轮重试次数。 */
 const MAX_RETRIES = 4;
 
+/** 冲突/限流重试的退避基数与上限（毫秒）。 */
+const RETRY_BASE_MS = 500;
+const RETRY_MAX_MS = 8_000;
+/** 尊重服务端 Retry-After 时的等待上限（避免被要求等过久卡死本轮）。 */
+const RETRY_AFTER_CAP_MS = 60_000;
+
 export type SyncStatus =
   | 'created' // 远端原本无文件，本次首创
   | 'pushed' // 合并后有本地新增，已推送
@@ -65,6 +71,10 @@ export interface SyncOptions {
   adapter?: SqliteAdapter;
   /** GitHub 配置（默认 loadConfig()）。测试直接传，避免依赖 setting 单例库。 */
   config?: GithubConfig;
+  /** 重试退避等待实现（默认真实 setTimeout）。测试注入以免真实等待。 */
+  sleep?: (ms: number) => Promise<void>;
+  /** 抖动随机源（默认 Math.random）。测试注入以获得确定性退避。 */
+  random?: () => number;
 }
 
 // 并发合流：同一时刻只允许一轮同步。
@@ -96,68 +106,99 @@ async function runSync(opts: SyncOptions): Promise<SyncResult> {
   }
 
   const settings = new SettingServiceImpl(adapter);
+  const sleep = opts.sleep ?? defaultSleep;
+  const random = opts.random ?? Math.random;
 
   try {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const remote = await getRemoteFile(cfg);
+      try {
+        const remote = await getRemoteFile(cfg);
 
-      // —— 情况 A：远端还没有备份文件 → 首次创建 ——
-      if (!remote) {
-        const localSnap = await exportSnapshot(adapter);
-        const text = serializeSnapshot(localSnap);
-        try {
+        // —— 情况 A：远端还没有备份文件 → 首次创建 ——
+        if (!remote) {
+          const localSnap = await exportSnapshot(adapter);
+          const text = serializeSnapshot(localSnap);
           await putRemoteFile(cfg, text, commitMessage(localSnap.exportedAt), {
             expectedSha: null, // 显式声明"远端应无此文件"
           });
-        } catch (e) {
-          // 竞态：刚才 GET 得 404，PUT 时别的设备已创建 → 409/422，整轮重试。
-          if (isConflict(e)) continue;
-          throw e;
+          const at = await stampSyncAt(settings);
+          return { status: 'created', at, retries: attempt };
         }
-        const at = await stampSyncAt(settings);
-        return { status: 'created', at, retries: attempt };
-      }
 
-      // —— 情况 B：远端已有文件 → 宽松解析并合并 ——
-      const parsed = parseSnapshotLenient(remote.content);
-      if (!parsed.ok || !parsed.snapshot) {
-        // 远端文件损坏/非本应用：绝不覆盖、绝不动本地，交由用户处理。
-        return { status: 'error', message: `远端备份无法解析：${parsed.error ?? '未知格式'}` };
-      }
+        // —— 情况 B：远端已有文件 → 宽松解析并合并 ——
+        const parsed = parseSnapshotLenient(remote.content);
+        if (!parsed.ok || !parsed.snapshot) {
+          // 远端文件损坏/非本应用：绝不覆盖、绝不动本地，交由用户处理（不重试）。
+          return { status: 'error', message: `远端备份无法解析：${parsed.error ?? '未知格式'}` };
+        }
 
-      const localSnap = await exportSnapshot(adapter);
-      const { merged, report } = mergeSnapshots(localSnap, parsed.snapshot);
+        const localSnap = await exportSnapshot(adapter);
+        const { merged, report } = mergeSnapshots(localSnap, parsed.snapshot);
 
-      // a. 合并结果落本地（吸收远端新增/删除；事务内整体替换，失败回滚）。
-      await restoreSnapshot(adapter, merged);
+        // a. 合并结果落本地（吸收远端新增/删除；事务内整体替换，失败回滚）。
+        await restoreSnapshot(adapter, merged);
 
-      // b. 合并结果与远端"数据等价"（忽略行序/时间戳）→ 本地无新东西，只拉不推。
-      //    不能按 JSON 逐字节比：merge 会重排行、盖新 exportedAt，且远端可能是 v1 形状。
-      if (snapshotDataEquals(merged, parsed.snapshot)) {
-        const at = await stampSyncAt(settings);
-        return { status: 'up-to-date', report, at, retries: attempt };
-      }
+        // b. 合并结果与远端"数据等价"（忽略行序/时间戳）→ 本地无新东西，只拉不推。
+        //    不能按 JSON 逐字节比：merge 会重排行、盖新 exportedAt，且远端可能是 v1 形状。
+        if (snapshotDataEquals(merged, parsed.snapshot)) {
+          const at = await stampSyncAt(settings);
+          return { status: 'up-to-date', report, at, retries: attempt };
+        }
 
-      // c. 有本地新增 → 带远端 sha 乐观锁推送。
-      const mergedText = serializeSnapshot(merged);
-      try {
+        // c. 有本地新增 → 带远端 sha 乐观锁推送。
+        const mergedText = serializeSnapshot(merged);
         await putRemoteFile(cfg, mergedText, commitMessage(merged.exportedAt), {
           expectedSha: remote.sha,
         });
+        const at = await stampSyncAt(settings);
+        return { status: 'pushed', report, at, retries: attempt };
       } catch (e) {
-        if (isConflict(e)) continue; // 远端又变了 → 整轮重试
+        // 可重试（乐观锁 409/422 或限流 403/429）→ 退避后整轮重跑；否则上抛。
+        if (await maybeBackoff(e, attempt, sleep, random)) continue;
         throw e;
       }
-      const at = await stampSyncAt(settings);
-      return { status: 'pushed', report, at, retries: attempt };
     }
 
-    // 连续 409：远端被高频改动，本轮放弃（下次触发再来）。
+    // 连续冲突/限流：远端被高频改动或被限流，本轮放弃（下次触发再来）。
     return { status: 'error', message: '远端变化过于频繁，本次同步未完成，请稍后重试。' };
   } catch (e) {
     const message = e instanceof GithubError ? e.message : '同步失败，请稍后重试。';
     return { status: 'error', message };
   }
+}
+
+/** 默认等待实现：真实计时器。测试可经 SyncOptions.sleep 注入以免真实等待。 */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 出错后判断是否重试：
+ *   - 不可重试（如 401/404/网络/解析）→ 返回 false，交由上层上抛并转成用户错误。
+ *   - 可重试（409/422 乐观锁冲突、403/429 限流）→ 退避等待后返回 true（继续整轮重跑）；
+ *     已达重试上限则不再等待，直接返回 true 让循环收尾报"过于频繁"。
+ */
+async function maybeBackoff(
+  e: unknown,
+  attempt: number,
+  sleep: (ms: number) => Promise<void>,
+  random: () => number,
+): Promise<boolean> {
+  if (!isRetryable(e)) return false;
+  if (attempt >= MAX_RETRIES) return true; // 已到上限：不再睡，让循环收尾
+  await sleep(backoffMs(attempt, e, random));
+  return true;
+}
+
+/** 计算本次重试前的等待毫秒：限流优先尊重服务端建议，否则指数退避 + 抖动。 */
+function backoffMs(attempt: number, e: unknown, random: () => number): number {
+  if (e instanceof GithubError && e.rateLimited && typeof e.retryAfterMs === 'number') {
+    // 尊重 Retry-After / x-ratelimit-reset，但封顶避免被要求等过久卡死本轮。
+    return Math.min(Math.max(e.retryAfterMs, 0), RETRY_AFTER_CAP_MS);
+  }
+  const exp = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS);
+  const jitter = random() * RETRY_BASE_MS; // [0, base) 抖动，打散多设备/多标签的同拍重试
+  return exp + jitter;
 }
 
 /** 记 lastSyncAt 并返回该时间戳。 */
@@ -172,9 +213,10 @@ function commitMessage(exportedAt: number): string {
   return `sync: ivy-wallet snapshot ${new Date(exportedAt).toISOString()}`;
 }
 
-/** GitHub 乐观锁冲突：409（sha 不符）或 422（并发创建）。 */
-function isConflict(e: unknown): boolean {
-  return e instanceof GithubError && (e.status === 409 || e.status === 422);
+/** GitHub 可重试错误：409（sha 不符）/422（并发创建）乐观锁冲突，或 403/429 限流。 */
+function isRetryable(e: unknown): boolean {
+  if (!(e instanceof GithubError)) return false;
+  return e.status === 409 || e.status === 422 || e.rateLimited === true;
 }
 
 /** 上次自动同步成功时间（epoch ms），无则 null。 */
