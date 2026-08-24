@@ -15,7 +15,7 @@
 // 只读速览升级（S5）：流水条目可点击进入编辑（/txn/:id/edit），复用记一笔表单；
 //   账户/分类管理（S4）与深度分析（S10）不在本阶段。
 // ============================================================
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   accountService,
@@ -149,7 +149,28 @@ async function loadMonth(): Promise<void> {
 onMounted(async () => {
   await loadStatic();
   await loadMonth();
+  window.addEventListener('keydown', onMonthKeydown);
 });
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onMonthKeydown);
+});
+
+// 桌面键盘：← / → 切上/下一月（尊重 atEarliestMonth/atCurrentMonth 边界）。
+// 仅在概览页挂载期间生效（onUnmounted 摘除），不影响其他页的 tab 切换。
+// 输入框/文本域聚焦时豁免，避免与文本内的光标移动抢键。
+function onMonthKeydown(e: KeyboardEvent): void {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const el = e.target as HTMLElement | null;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') {
+    prevMonth();
+    e.preventDefault();
+  } else if (e.key === 'ArrowRight') {
+    nextMonth();
+    e.preventDefault();
+  }
+}
 
 // 月份切换后刷新三卡与流水（余额全期口径，无需随月刷新）。
 watch([timeFrom, timeTo], () => {
@@ -286,9 +307,10 @@ function txnAmountClass(t: TxnWithTags): string {
     <!-- 月份切换：投放到顶栏（与页标题同高、右对齐），页内不再单独占一行。 -->
     <Teleport to="#topbar-slot">
       <div class="month-switch">
-        <button aria-label="上一月" :disabled="atEarliestMonth" @click="prevMonth">‹</button>
+        <button aria-label="上一月（← 键）" :disabled="atEarliestMonth" @click="prevMonth">‹</button>
         <span class="m-label">{{ monthLabel }}</span>
-        <button aria-label="下一月" :disabled="atCurrentMonth" @click="nextMonth">›</button>
+        <button aria-label="下一月（→ 键）" :disabled="atCurrentMonth" @click="nextMonth">›</button>
+        <span class="kbd-hint month-kbd" aria-hidden="true"><span class="kbd">←</span><span class="kbd">→</span></span>
       </div>
     </Teleport>
 
@@ -450,6 +472,16 @@ function txnAmountClass(t: TxnWithTags): string {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+}
+/* 快捷键提示贴在月份条右侧、绝对定位，不参与居中盒宽度，
+   保证「概览月份条居中」不因提示而偏移（AGENTS 约定）。 */
+#topbar-slot .month-switch .month-kbd {
+  position: absolute;
+  left: 100%;
+  margin-left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
 }
 
 /* S7.1：流水行备注（层级低于 .txn-sub 的最次要一行；单行省略，悬停看全文）。

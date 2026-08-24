@@ -132,6 +132,28 @@ svg { display: block; }
 .muted { color: var(--fg-2); }
 .faint { color: var(--fg-3); }
 
+/* 键盘焦点可见性：仅键盘（:focus-visible）时描边，鼠标点击不显，避免视觉噪声。
+   统一给所有可交互元素上「品牌色描边」，是纯键盘导航（Tab/方向键）的前提。 */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+/* 输入框已有自带聚焦样式（.input:focus），不再叠描边免重影。 */
+.input:focus-visible, .note-inline input:focus-visible, textarea:focus-visible { outline: none; }
+
+/* 桌面端快捷键小提示（如「← →」「⌘N」）：极轻量、不占大块空间。
+   手机端（≤720px）整体隐藏（见 S11 段），仅电脑端展示。 */
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  font-family: var(--font-sans); font-size: 10px; font-weight: 700; line-height: 1;
+  color: var(--fg-3); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 4px;
+  vertical-align: middle;
+}
+.kbd-hint { display: inline-flex; align-items: center; gap: 3px; color: var(--fg-3); font-size: 11px; font-weight: 600; }
+
 /* ---------- 3. 桌面外壳：侧边栏 + 主区 ---------- */
 .app { display: flex; width: 100%; height: 100%; overflow: hidden; }
 .sidebar {
@@ -154,6 +176,12 @@ svg { display: block; }
   box-shadow: var(--sh-2); margin-bottom: 16px; width: 100%;
 }
 .nav-add:hover { background: var(--primary-strong); }
+/* 侧栏「记一笔」按钮的 ⌘N 提示：右侧极淡小键帽，反白底以适配蓝底按钮。 */
+.nav-add-kbd { margin-left: 4px; display: inline-flex; }
+.nav-add-kbd .kbd {
+  color: var(--primary-fg); background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
+}
 
 .nav-list { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .nav-item {
@@ -368,6 +396,9 @@ svg { display: block; }
 .app-add-mode .m-back-btn:hover { background: var(--surface-2); }
 
 @media (max-width: 720px) {
+  /* 快捷键提示仅电脑端展示：手机无物理键盘，一律隐藏（不占位、不换行）。 */
+  .kbd, .kbd-hint { display: none !important; }
+
   /* --- 布局翻转：外壳竖排，侧栏收起，主区铺满 --- */
   .app { flex-direction: column; height: 100dvh; } /* dvh 跟随移动端地址栏，比 vh 稳（坑3） */
   .sidebar { display: none; }

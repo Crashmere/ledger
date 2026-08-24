@@ -31,7 +31,7 @@
 //   · 金额一律 Cents，展示只经 money.format，禁手写 /100。
 //   · 只写页面层：不改 src/services/** 与 src/db/**，服务层只当消费方调用。
 // ============================================================
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   accountService,
@@ -288,7 +288,27 @@ onMounted(async () => {
   await reloadDetail();
   // query 里可能残留失效的 account/cat（已删除等）→ 用兜底后的真实状态回写，保持 URL 一致。
   syncQuery();
+  window.addEventListener('keydown', onGlobalKeydown);
 });
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown);
+});
+
+// 桌面键盘：Esc 分层关闭最上层弹层——先关二次确认（confirmState），
+//   再关新建/编辑弹窗（modal）。均不触发页面返回（本页不需要）。
+//   输入框/文本域聚焦时也允许 Esc 关闭（弹窗内 name 输入很常见），
+//   但其余键在输入态一律放行，避免抢字符输入。
+function onGlobalKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (confirmState.value) {
+    confirmState.value = null;
+    e.preventDefault();
+  } else if (modal.value) {
+    closeModal();
+    e.preventDefault();
+  }
+}
 
 // ============================================================
 // 拖拽排序（原生 HTML5 drag，无新依赖）
@@ -1181,6 +1201,7 @@ function txnAmountClass(t: TxnWithTags): string {
             删除账户
           </button>
           <span style="flex: 1" />
+          <span class="kbd-hint" aria-hidden="true"><span class="kbd">Esc</span>取消</span>
           <button class="btn btn-ghost" @click="closeModal">取消</button>
           <button class="btn btn-primary" :disabled="saving || !fName.trim()" @click="saveModal">
             {{ saving ? '保存中…' : '保存' }}
@@ -1198,6 +1219,7 @@ function txnAmountClass(t: TxnWithTags): string {
         </div>
         <div class="modal-foot">
           <span style="flex: 1" />
+          <span class="kbd-hint" aria-hidden="true"><span class="kbd">Esc</span>取消</span>
           <button class="btn btn-ghost" @click="confirmState = null">取消</button>
           <button class="btn btn-danger" @click="runConfirm">{{ confirmState.confirmText }}</button>
         </div>

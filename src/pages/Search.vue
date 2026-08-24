@@ -24,7 +24,7 @@
 //   - 高亮 v-html 前先转义 HTML 特殊字符防 XSS（见 escapeHtml/highlight）。
 // 本阶段只做桌面宽屏；手机响应式留待后续（仅留 @media 伏笔）。
 // ============================================================
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, nextTick, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   accountService,
@@ -188,6 +188,7 @@ onMounted(async () => {
   loadRecent();
   await loadStatic();
   await load();
+  window.addEventListener('keydown', onSearchGlobalKeydown);
 });
 
 // 结构化筛选变化 → 重发 query（敲关键词不重查库，见 §七坑位6）。
@@ -277,6 +278,62 @@ function selectTxn(id: Id): void {
 const selectedTxn = computed<TxnWithTags | null>(
   () => hitTxns.value.find((t) => t.id === selectedId.value) ?? null,
 );
+
+// 桌面键盘导航：↑/↓ 在命中列表移动选中项，Enter 打开当前选中项编辑。
+//   Esc 分层（关键词非空→清空关键词；否则清空全部筛选）见 onSearchGlobalKeydown。
+//   输入框/文本域聚焦时豁免（搜索框自身的 Enter=记历史另绑，见 onSearchEnter）。
+function moveSelection(delta: number): void {
+  const list = hitTxns.value;
+  if (list.length === 0) return;
+  const idx = list.findIndex((t) => t.id === selectedId.value);
+  // 未选中时：↓ 选第一项、↑ 选最后一项；已选中则在边界内移动（不循环）。
+  let next: number;
+  if (idx < 0) next = delta > 0 ? 0 : list.length - 1;
+  else next = Math.min(list.length - 1, Math.max(0, idx + delta));
+  const target = list[next];
+  if (target) {
+    selectedId.value = target.id;
+    // 让选中行滚入视野（列表可能很长）。
+    void nextTick(() => {
+      document
+        .querySelector('.txn-selected')
+        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  }
+}
+
+function onSearchGlobalKeydown(e: KeyboardEvent): void {
+  if (e.altKey) return;
+  const el = e.target as HTMLElement | null;
+  const inField =
+    !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+  // ↑/↓ 移动选中项：即使焦点在搜索框也生效（列表导航优先于文本光标上下，
+  //   单行输入里上下键无意义）；有修饰键则放行给浏览器。
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.metaKey && !e.ctrlKey) {
+    moveSelection(e.key === 'ArrowDown' ? 1 : -1);
+    e.preventDefault();
+    return;
+  }
+  // Enter 打开当前选中项编辑：仅当焦点不在搜索框（搜索框 Enter 记历史，见模板 @keydown.enter）。
+  if (e.key === 'Enter' && !inField && selectedTxn.value) {
+    openEdit(selectedTxn.value.id);
+    e.preventDefault();
+    return;
+  }
+  // Esc 分层：优先关「添加筛选」浮层 → 再清关键词 → 再清全部筛选。
+  if (e.key === 'Escape') {
+    if (addOpen.value) {
+      closeAdd();
+    } else if (keyword.value.trim()) {
+      clearKeyword();
+    } else if (hasAnyFilter.value) {
+      clearAll();
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
+}
 
 // ============================================================
 // 纯函数工具（渲染 / 格式化）
@@ -489,6 +546,7 @@ function clearKeyword(): void {
 }
 onBeforeUnmount(() => {
   if (recentTimer) clearTimeout(recentTimer);
+  window.removeEventListener('keydown', onSearchGlobalKeydown);
 });
 
 // ============================================================
@@ -582,6 +640,11 @@ function clearAll(): void {
     <div class="search-head">
       <span class="page-sub">共</span>
       <span class="badge badge-expense">命中 {{ hitCount }} 笔</span>
+      <span class="kbd-hint search-kbd" aria-hidden="true">
+        <span class="kbd">↑</span><span class="kbd">↓</span>选择
+        <span class="kbd">↵</span>编辑
+        <span class="kbd">Esc</span>清空
+      </span>
     </div>
 
     <!-- 大号搜索框 -->
@@ -623,21 +686,26 @@ function clearAll(): void {
 
       <span class="filter-sep" aria-hidden="true"></span>
 
-      <!-- 可叠加筛选 chips -->
+      <!-- 可叠加筛选 chips（× 可 Tab 聚焦 + Enter/空格删除） -->
       <span v-for="t in selectedTypes" :key="'ty-' + t" class="chip chip-on">
-        类型：{{ typeLabel(t) }} <span class="x" role="button" @click="toggleType(t)">×</span>
+        类型：{{ typeLabel(t) }}
+        <span class="x" role="button" tabindex="0" aria-label="删除筛选" @click="toggleType(t)" @keydown.enter.prevent="toggleType(t)" @keydown.space.prevent="toggleType(t)">×</span>
       </span>
       <span v-for="id in selectedAccountIds" :key="'ac-' + id" class="chip chip-on">
-        账户：{{ accountName(id) }} <span class="x" role="button" @click="toggleAccount(id)">×</span>
+        账户：{{ accountName(id) }}
+        <span class="x" role="button" tabindex="0" aria-label="删除筛选" @click="toggleAccount(id)" @keydown.enter.prevent="toggleAccount(id)" @keydown.space.prevent="toggleAccount(id)">×</span>
       </span>
       <span v-for="name in selectedCategoryNames" :key="'ca-' + name" class="chip chip-on">
-        分类：{{ name }} <span class="x" role="button" @click="toggleCategoryName(name)">×</span>
+        分类：{{ name }}
+        <span class="x" role="button" tabindex="0" aria-label="删除筛选" @click="toggleCategoryName(name)" @keydown.enter.prevent="toggleCategoryName(name)" @keydown.space.prevent="toggleCategoryName(name)">×</span>
       </span>
       <span v-for="id in selectedTagIds" :key="'tg-' + id" class="chip chip-on">
-        标签：{{ tagName(id) }} <span class="x" role="button" @click="toggleTag(id)">×</span>
+        标签：{{ tagName(id) }}
+        <span class="x" role="button" tabindex="0" aria-label="删除筛选" @click="toggleTag(id)" @keydown.enter.prevent="toggleTag(id)" @keydown.space.prevent="toggleTag(id)">×</span>
       </span>
       <span v-if="hasAmountChip" class="chip chip-on">
-        金额：{{ amountChipLabel }} <span class="x" role="button" @click="clearAmount()">×</span>
+        金额：{{ amountChipLabel }}
+        <span class="x" role="button" tabindex="0" aria-label="删除筛选" @click="clearAmount()" @keydown.enter.prevent="clearAmount()" @keydown.space.prevent="clearAmount()">×</span>
       </span>
 
       <!-- 添加筛选 -->
@@ -1007,6 +1075,9 @@ function clearAll(): void {
   color: var(--fg-3);
   font-weight: 600;
 }
+/* 搜索页快捷键提示：推到该行最右，轻量、不抢眼（手机端由 tokens.css 统一隐藏）。 */
+.search-head .search-kbd { margin-left: auto; gap: 4px; }
+.search-head .search-kbd .kbd { margin-left: 2px; }
 
 /* 展示排序下拉（嵌在 pill 里的原生 select，去边框透明化；从报告页迁入） */
 .sort-select {

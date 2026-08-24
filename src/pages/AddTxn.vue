@@ -463,9 +463,19 @@ function goBack(): void {
 // 物理键盘（辅助，非必需）
 // ============================================================
 function onKeydown(e: KeyboardEvent): void {
-  // 备注输入框聚焦时不拦截键盘。
+  // 备注/标题等输入框聚焦时不拦截键盘。
   const el = e.target as HTMLElement | null;
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+  // Esc 分层（与搜索页同思路）：先关删除确认 → 再关选择器浮层 →
+  //   金额非空则清空金额 → 金额为空则返回上一页。'c' 始终等于清空金额。
+  if (e.key === 'Escape') {
+    if (confirmingDelete.value) confirmingDelete.value = false;
+    else if (openPicker.value) openPicker.value = null;
+    else if (raw.value) clearAll();
+    else goBack();
+    e.preventDefault();
+    return;
+  }
   if (e.key >= '0' && e.key <= '9') press(e.key);
   else if (e.key === '.' || e.key === 'Decimal' || e.code === 'NumpadDecimal' || e.code === 'Period')
     press('.'); // 主键区句号、小键盘小数点、部分布局的 'Decimal' 都算小数点
@@ -473,7 +483,7 @@ function onKeydown(e: KeyboardEvent): void {
   else if (e.key === '(' || e.key === ')') pressParen(e.key);
   else if (e.key === '=') equals(); // 等于号：求值并折叠结果，供继续运算
   else if (e.key === 'Backspace') backspace();
-  else if (e.key === 'Escape' || (e.key.toLowerCase() === 'c' && !e.ctrlKey && !e.metaKey)) clearAll();
+  else if (e.key.toLowerCase() === 'c' && !e.ctrlKey && !e.metaKey) clearAll();
   else if (e.key === 'Enter') void save(); // Enter 仍是「保存整笔」快捷键（金额已实时求值）
   else return;
   e.preventDefault();
@@ -499,13 +509,21 @@ function resetFormState(): void {
   notFound.value = false;
 }
 
-/** 新建模式的智能默认：类型=支出（初值即是）、账户=上次使用、日期=今天。 */
+/** 新建模式的智能默认：类型=支出（初值即是）、账户=上次使用、日期=今天。
+ *  例外：若 URL query 带 ?account=<id>（⌘N 从账户页带入），且该账户有效，
+ *  则优先用它，方便「在某账户页按 ⌘N 直接记该账户的一笔」。 */
 async function initCreate(): Promise<void> {
-  const last = await settingService.get(LAST_ACCOUNT_KEY);
-  if (last && accounts.value.some((a) => a.id === last)) {
-    accountId.value = last;
+  const q = route.query.account;
+  const qAccount = typeof q === 'string' && q ? q : null;
+  if (qAccount && accounts.value.some((a) => a.id === qAccount)) {
+    accountId.value = qAccount;
   } else {
-    accountId.value = accounts.value[0]?.id ?? null;
+    const last = await settingService.get(LAST_ACCOUNT_KEY);
+    if (last && accounts.value.some((a) => a.id === last)) {
+      accountId.value = last;
+    } else {
+      accountId.value = accounts.value[0]?.id ?? null;
+    }
   }
   await loadCategories();
 }
@@ -798,6 +816,11 @@ onUnmounted(() => {
           <button class="btn btn-primary btn-lg btn-block mt-2" :disabled="!canSave || saving" @click="save">
             {{ saving ? '保存中…' : isEdit ? '保存修改' : '保存这一笔' }}
           </button>
+          <div class="add-kbd-hint kbd-hint" aria-hidden="true">
+            <span class="kbd">↵</span>保存
+            <span class="kbd">Esc</span>清空/返回
+            <span class="kbd">C</span>清空
+          </div>
           <!-- 编辑模式：删除入口（次级危险按钮，二次确认，不与保存混淆） -->
           <button
             v-if="isEdit"
@@ -1052,6 +1075,13 @@ onUnmounted(() => {
 .add-right-foot {
   margin-top: auto;
 }
+/* 桌面记一笔快捷键提示：保存按钮下方居中、极淡（手机端由 tokens.css 统一隐藏）。 */
+.add-kbd-hint {
+  justify-content: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+.add-kbd-hint .kbd { margin-left: 3px; }
 
 /* pill 选择器锚点 */
 .picker-anchor {

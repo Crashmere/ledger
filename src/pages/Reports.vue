@@ -23,7 +23,7 @@
 //   - 单人应用，界面无「记账人/成员/协作/TA」等社交化词汇。
 // 本阶段只做桌面宽屏；手机响应式留待后续。
 // ============================================================
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   accountService,
   categoryService,
@@ -224,7 +224,39 @@ async function load(): Promise<void> {
 onMounted(async () => {
   await loadStatic();
   await load();
+  window.addEventListener('keydown', onReportsKeydown);
 });
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onReportsKeydown);
+});
+
+// 桌面键盘：← / → 在时间范围 tab（本月/近30天/本年/自定义）间循环切换；
+//   Esc 关闭「添加条件」浮层（先返回二级维度，再整体关闭）。
+//   输入框/文本域（自定义日期、金额范围输入）聚焦时豁免方向键，Esc 仍可关浮层。
+function onReportsKeydown(e: KeyboardEvent): void {
+  if (e.altKey) return;
+  const el = e.target as HTMLElement | null;
+  const inField =
+    !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+  if (e.key === 'Escape') {
+    if (addOpen.value) {
+      if (addDim.value !== null) addDim.value = null;
+      else closeAdd();
+      e.preventDefault();
+    }
+    return;
+  }
+  if (inField || e.metaKey || e.ctrlKey) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const idx = RANGE_TABS.findIndex((t) => t.v === rangeMode.value);
+    const len = RANGE_TABS.length;
+    const next = e.key === 'ArrowRight' ? (idx + 1) % len : (idx - 1 + len) % len;
+    const tab = RANGE_TABS[next];
+    if (tab) rangeMode.value = tab.v;
+    e.preventDefault();
+  }
+}
 
 // 任一筛选/范围/排序变化 → 重查（唯一真相源刷新，下游 computed 自动重算）。
 watch(activeQuery, () => void load(), { deep: true });
@@ -468,6 +500,7 @@ function clearAll(): void {
           {{ tab.label }}
         </button>
       </div>
+      <span class="kbd-hint range-kbd" aria-hidden="true"><span class="kbd">←</span><span class="kbd">→</span>切换范围</span>
       <div v-if="rangeMode === 'custom'" class="row gap-2 custom-range">
         <input type="date" class="input date-input" v-model="customFrom" aria-label="起始日期" />
         <span class="faint">至</span>
@@ -483,19 +516,24 @@ function clearAll(): void {
           <span class="faint" style="font-size: 12px; font-weight: 600; margin-right: 2px">逐步筛选</span>
 
           <span v-for="t in selectedTypes" :key="'ty-' + t" class="chip chip-on">
-            类型：{{ typeLabel(t) }} <span class="x" role="button" @click="toggleType(t)">×</span>
+            类型：{{ typeLabel(t) }}
+            <span class="x" role="button" tabindex="0" aria-label="删除条件" @click="toggleType(t)" @keydown.enter.prevent="toggleType(t)" @keydown.space.prevent="toggleType(t)">×</span>
           </span>
           <span v-for="id in selectedAccountIds" :key="'ac-' + id" class="chip chip-on">
-            账户：{{ accountName(id) }} <span class="x" role="button" @click="toggleAccount(id)">×</span>
+            账户：{{ accountName(id) }}
+            <span class="x" role="button" tabindex="0" aria-label="删除条件" @click="toggleAccount(id)" @keydown.enter.prevent="toggleAccount(id)" @keydown.space.prevent="toggleAccount(id)">×</span>
           </span>
           <span v-for="name in selectedCategoryNames" :key="'ca-' + name" class="chip chip-on">
-            分类：{{ name }} <span class="x" role="button" @click="toggleCategoryName(name)">×</span>
+            分类：{{ name }}
+            <span class="x" role="button" tabindex="0" aria-label="删除条件" @click="toggleCategoryName(name)" @keydown.enter.prevent="toggleCategoryName(name)" @keydown.space.prevent="toggleCategoryName(name)">×</span>
           </span>
           <span v-for="id in selectedTagIds" :key="'tg-' + id" class="chip chip-on">
-            标签：{{ tagName(id) }} <span class="x" role="button" @click="toggleTag(id)">×</span>
+            标签：{{ tagName(id) }}
+            <span class="x" role="button" tabindex="0" aria-label="删除条件" @click="toggleTag(id)" @keydown.enter.prevent="toggleTag(id)" @keydown.space.prevent="toggleTag(id)">×</span>
           </span>
           <span v-if="hasAmountChip" class="chip chip-on">
-            金额：{{ amountChipLabel }} <span class="x" role="button" @click="clearAmount()">×</span>
+            金额：{{ amountChipLabel }}
+            <span class="x" role="button" tabindex="0" aria-label="删除条件" @click="clearAmount()" @keydown.enter.prevent="clearAmount()" @keydown.space.prevent="clearAmount()">×</span>
           </span>
 
           <!-- 添加条件 -->

@@ -9,7 +9,7 @@
 //   桌面外壳完全不变。切换纯靠 CSS @media（见 tokens.css 尾部 S11 段），无 JS 判定。
 //   底栏/FAB/放大镜三个手机元素在桌面下 display:none，故对桌面零影响。
 // ============================================================
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ToastHost from './components/ToastHost.vue';
 
@@ -21,6 +21,31 @@ function goBack(): void {
   if (window.history.length > 1) router.back();
   else void router.push('/overview');
 }
+
+// 全局快捷键 ⌘N（Windows/Linux：Ctrl+N）→ 打开记一笔。
+//   若当前在账户页且已选中某账户（URL query.account），则带 ?account=<id> 进入，
+//   记一笔会把该账户预选为默认（见 AddTxn.initCreate）。
+//   注意：浏览器普通标签页里 Ctrl/⌘+N 是「新建窗口」的保留快捷键，preventDefault 未必拦得住；
+//   PWA standalone 独立窗口下可正常生效。已在 add/编辑 页时不重复跳转。
+function onGlobalKeydown(e: KeyboardEvent): void {
+  const mod = e.metaKey || e.ctrlKey;
+  if (!mod || e.altKey || e.shiftKey) return;
+  if (e.key.toLowerCase() !== 'n') return;
+  e.preventDefault();
+  if (route.name === 'add') return;
+  const q =
+    route.name === 'accounts' && typeof route.query.account === 'string' && route.query.account
+      ? { account: route.query.account }
+      : undefined;
+  void router.push({ path: '/add', query: q });
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown);
+});
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown);
+});
 
 // 顶栏标题：优先用路由 meta.title，兜底用"记账"。
 const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '记账');
@@ -68,6 +93,7 @@ const tabItems = navItems.filter((i) => i.to !== '/search');
           <path d="M12 5v14M5 12h14" />
         </svg>
         记一笔
+        <span class="nav-add-kbd" aria-hidden="true"><span class="kbd">⌘N</span></span>
       </RouterLink>
 
       <nav class="nav-list">

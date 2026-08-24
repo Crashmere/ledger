@@ -21,7 +21,7 @@
 //     importLegacyBackup 内部走 Math.round（与 money 口径一致）。
 //   - 只经 getAdapter() 裸 SQL 或服务层写库，不改数据层/服务层签名。
 // ============================================================
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { getAdapter } from '../db/client';
 import {
@@ -774,7 +774,31 @@ function cellText(v: unknown): string {
 
 onMounted(() => {
   void loadCfgIntoForm();
-});</script>
+  window.addEventListener('keydown', onSettingsKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onSettingsKeydown);
+});
+
+// 桌面键盘：Esc 关闭最上层弹层（优先级：SQL 执行确认 → 云端恢复确认 → 导入确认）。
+//   红线：破坏性操作不给 Enter 直接确认（本页确认按钮不绑 Enter，需鼠标点击或 Tab+Enter 到按钮），
+//   且执行中（sqlRunning / restoring）不响应 Esc，避免中断事务。
+//   SQL textarea 与其它输入框内的 Esc 也允许关弹层（此时弹层已弹出，textarea 不再聚焦），
+//   但方向键/字符键从不被本处拦截（只处理 Escape）。
+function onSettingsKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (sqlPlan.value) {
+    cancelSqlConfirm(); // 内部已判 sqlRunning，执行中不关
+    if (!sqlRunning.value) e.preventDefault();
+  } else if (restoreState.value === 'confirm') {
+    cancelRestore();
+    e.preventDefault();
+  } else if (confirmMode.value) {
+    confirmMode.value = null;
+    e.preventDefault();
+  }
+}</script>
 
 <template>
   <div class="content">
@@ -1300,6 +1324,7 @@ onMounted(() => {
         </div>
         <div class="modal-foot">
           <span style="flex: 1" />
+          <span class="kbd-hint" aria-hidden="true"><span class="kbd">Esc</span>取消</span>
           <button class="btn btn-ghost" :disabled="sqlRunning" @click="cancelSqlConfirm">取消</button>
           <button
             class="btn btn-danger"
@@ -1347,6 +1372,7 @@ onMounted(() => {
         </div>
         <div class="modal-foot">
           <span style="flex: 1" />
+          <span class="kbd-hint" aria-hidden="true"><span class="kbd">Esc</span>取消</span>
           <button class="btn btn-ghost" :disabled="restoreState === 'restoring'" @click="cancelRestore">
             取消
           </button>
@@ -1375,6 +1401,7 @@ onMounted(() => {
         </div>
         <div class="modal-foot">
           <span style="flex: 1" />
+          <span class="kbd-hint" aria-hidden="true"><span class="kbd">Esc</span>取消</span>
           <button class="btn btn-ghost" @click="confirmMode = null">取消</button>
           <button
             class="btn"
