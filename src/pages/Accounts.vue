@@ -100,6 +100,8 @@ const saving = ref(false);
 const DEFAULT_COLOR = hexToArgb('#1a73e8');
 const fName = ref('');
 const fColor = ref<number>(DEFAULT_COLOR);
+// 随机色：色板第一枚「随机」芯片当前展示/可被选中的颜色（ARGB 整数）。
+const randomColor = ref<number>(DEFAULT_COLOR);
 const fInitialBalance = ref('0'); // 元字符串，仅账户用
 const fIncludeInBalance = ref(true); // 仅账户用
 // 专项账户表单字段（仅 account 且 kind=project 时有意义）
@@ -328,7 +330,8 @@ async function onDrop(kind: 'account' | 'category', index: number): Promise<void
 // ============================================================
 function openAccountCreate(): void {
   fName.value = '';
-  fColor.value = DEFAULT_COLOR;
+  randomColor.value = makeRandomColor();
+  fColor.value = randomColor.value; // 默认选中随机色
   fInitialBalance.value = '0';
   fIncludeInBalance.value = true;
   fKind.value = 'normal';
@@ -340,7 +343,8 @@ function openAccountCreate(): void {
 /** 新建专项账户：预置 kind=project、默认不计入总额（自成小账本）。 */
 function openProjectCreate(): void {
   fName.value = '';
-  fColor.value = hexToArgb('#9334e6'); // 专项用紫色系默认，视觉上与日常账户区分
+  randomColor.value = makeRandomColor();
+  fColor.value = randomColor.value; // 默认选中随机色
   fInitialBalance.value = '0';
   fIncludeInBalance.value = false; // 专项默认不计入左栏总额
   fKind.value = 'project';
@@ -351,6 +355,7 @@ function openProjectCreate(): void {
 }
 function openAccountEdit(acc: Account): void {
   fName.value = acc.name;
+  randomColor.value = makeRandomColor(); // 备一枚随机色供重选，但保持原色选中
   fColor.value = acc.color;
   fInitialBalance.value = centsToYuan(acc.initialBalance);
   fIncludeInBalance.value = acc.includeInBalance;
@@ -362,21 +367,25 @@ function openAccountEdit(acc: Account): void {
 }
 function openCategoryCreate(): void {
   fName.value = '';
-  fColor.value = DEFAULT_COLOR;
+  randomColor.value = makeRandomColor();
+  fColor.value = randomColor.value; // 默认选中随机色
   modal.value = { kind: 'category', mode: 'create' };
 }
 function openCategoryEdit(cat: Category): void {
   fName.value = cat.name;
+  randomColor.value = makeRandomColor();
   fColor.value = cat.color;
   modal.value = { kind: 'category', mode: 'edit', id: cat.id };
 }
 function openTagCreate(): void {
   fName.value = '';
-  fColor.value = DEFAULT_COLOR;
+  randomColor.value = makeRandomColor();
+  fColor.value = randomColor.value; // 默认选中随机色
   modal.value = { kind: 'tag', mode: 'create' };
 }
 function openTagEdit(t: Tag): void {
   fName.value = t.name;
+  randomColor.value = makeRandomColor();
   fColor.value = t.color;
   modal.value = { kind: 'tag', mode: 'edit', id: t.id };
 }
@@ -560,6 +569,106 @@ function argbToCss(argb: number): string {
 /** 判断某预设色是否 = 当前选中色（都归一到 ARGB 整数比较）。 */
 function isColorSelected(hex: string): boolean {
   return hexToArgb(hex) === fColor.value;
+}
+
+// ---------- 随机色生成 ----------
+// 目标：生成的颜色与既有色板「视觉统一」，同时「避免撞上已有颜色」。
+// 做法：在 HSL 空间取色——
+//   1) 饱和度/明度限定在既有 Material 风格色板的分布带内（S 68-82%、L 46-60%），
+//      保证不产生灰调或荧光色，风格与预设一致；
+//   2) 色相与「已用色相」（预设色板 + 当前账户/分类/标签在用色）尽量拉开，
+//      多次随机采样，取第一个与所有已用色相都相距 ≥ 阈值的候选（保留随机性），
+//      都不够远时兜底取「离最近已用色相最远」的那个。
+function argbToRgb(argb: number): [number, number, number] {
+  const u = argb >>> 0;
+  return [(u >>> 16) & 0xff, (u >>> 8) & 0xff, u & 0xff];
+}
+/** RGB(0-255) → 色相 h(0-360) 与饱和度 s(0-1)（明度用不到，省略）。 */
+function rgbToHueSat(r: number, g: number, b: number): { h: number; s: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) h = (((gn - bn) / d) % 6 + 6) % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h *= 60;
+  }
+  const l = (max + min) / 2;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  return { h, s };
+}
+/** HSL(h:0-360, s/l:0-1) → 不透明 ARGB 整数（加法避免 32 位有符号溢出）。 */
+function hslToArgb(h: number, s: number, l: number): number {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hp < 1) [r, g, b] = [c, x, 0];
+  else if (hp < 2) [r, g, b] = [x, c, 0];
+  else if (hp < 3) [r, g, b] = [0, c, x];
+  else if (hp < 4) [r, g, b] = [0, x, c];
+  else if (hp < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = l - c / 2;
+  const R = Math.round((r + m) * 255);
+  const G = Math.round((g + m) * 255);
+  const B = Math.round((b + m) * 255);
+  return 0xff000000 + (R << 16) + (G << 8) + B;
+}
+/** 两个色相在色环上的最短夹角（0-180）。 */
+function hueGap(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+/** 收集当前场景「已用色相」：预设色板 + 现存账户/分类/标签的颜色（忽略近灰色）。 */
+function collectUsedHues(): number[] {
+  const argbList: number[] = COLOR_PRESETS.map(hexToArgb);
+  for (const a of accounts.value) argbList.push(a.color);
+  for (const c of categoryById.value.values()) argbList.push(c.color);
+  for (const t of tags.value) argbList.push(t.color);
+  const hues: number[] = [];
+  for (const argb of argbList) {
+    const [r, g, b] = argbToRgb(argb);
+    const { h, s } = rgbToHueSat(r, g, b);
+    if (s > 0.15) hues.push(h); // 近灰色的色相无意义，跳过
+  }
+  return hues;
+}
+/** 生成一枚与色板统一、且尽量不撞已有色的随机颜色（ARGB 整数）。 */
+function makeRandomColor(): number {
+  const used = collectUsedHues();
+  const MIN_GAP = 24; // 与任一已用色相至少相隔 24°
+  let hue = Math.random() * 360;
+  let bestGap = -1;
+  for (let i = 0; i < 32; i++) {
+    const h = Math.random() * 360;
+    let nearest = 360;
+    for (const u of used) nearest = Math.min(nearest, hueGap(h, u));
+    if (nearest >= MIN_GAP) {
+      hue = h; // 第一个够远的随机候选即采用，保持随机性
+      bestGap = nearest;
+      break;
+    }
+    if (nearest > bestGap) {
+      bestGap = nearest; // 兜底：都不够远时取离最近已用色相最远者
+      hue = h;
+    }
+  }
+  const s = 0.68 + Math.random() * 0.14; // 68%-82%
+  const l = 0.46 + Math.random() * 0.14; // 46%-60%
+  return hslToArgb(hue, s, l);
+}
+/** 重掷随机色并选中它（点击色板首枚「随机」芯片时用）。 */
+function rerollRandomColor(): void {
+  randomColor.value = makeRandomColor();
+  fColor.value = randomColor.value;
 }
 
 function accountName(id: Id | null): string {
@@ -991,9 +1100,24 @@ function txnAmountClass(t: TxnWithTags): string {
           <div class="field">
             <label class="field-label">颜色</label>
             <div class="swatches">
+              <!-- 首枚：随机色。默认选中；点击可重掷一枚新的随机色。 -->
+              <button
+                type="button"
+                class="swatch swatch-random"
+                :class="{ on: fColor === randomColor }"
+                :style="{ background: argbToCss(randomColor) }"
+                :aria-label="'随机颜色（点击换一个）'"
+                title="随机颜色（点击换一个）"
+                @click="rerollRandomColor"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M21 12a9 9 0 1 1-3-6.7M21 4v4h-4" />
+                </svg>
+              </button>
               <button
                 v-for="hex in COLOR_PRESETS"
                 :key="hex"
+                type="button"
                 class="swatch"
                 :class="{ on: isColorSelected(hex) }"
                 :style="{ background: hex }"
@@ -1365,6 +1489,18 @@ function txnAmountClass(t: TxnWithTags): string {
 .swatch.on {
   border-color: var(--fg);
   box-shadow: 0 0 0 3px var(--ring);
+}
+/* 随机色芯片：色块基础上叠一个刷新图标，提示可点击重掷 */
+.swatch-random {
+  display: grid;
+  place-items: center;
+  color: #fff;
+  cursor: pointer;
+}
+.swatch-random svg {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
 }
 
 /* 开关 */
