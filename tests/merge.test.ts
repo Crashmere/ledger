@@ -244,6 +244,40 @@ describe('v1 快照兼容', () => {
 });
 
 // ------------------------------------------------------------
+// 专项账户（v3）降级防护：updated_at 相等时，结构列更完整的一方胜出
+// ------------------------------------------------------------
+// 背景 bug：旧字典序 tie-break 下，`"kind":null` > `"kind":"project"`，
+//   一台"降级客户端"（把 kind/period/archived 抹成 NULL 却沿用原 updated_at 回推）
+//   会在同毫秒并发里赢下 tie-break，把专项账户悄悄降级成普通账户，并全设备扩散。
+describe('专项账户降级防护：同 updated_at 时保留信息更多的一方', () => {
+  it('本地专项(kind=project) vs 远端被抹平(kind=null)、updated_at 相等 → 保留专项', () => {
+    const local = snap({
+      account: [acctRow({ id: 'acc-p', updated_at: 1000, kind: 'project', period_start: 500, period_end: 900 })],
+    });
+    // 远端同 id、同 updated_at，但 v3 列缺失（降级客户端 restore 往返后 kind 被抹成 NULL）。
+    const remote = snap({ account: [acctRow({ id: 'acc-p', updated_at: 1000 })] });
+
+    const ab = mergeSnapshots(local, remote).merged;
+    const ba = mergeSnapshots(remote, local).merged; // 交换入参，结论必须一致
+
+    expect(ab.tables.account[0].kind).toBe('project');
+    expect(ab.tables.account[0].period_start).toBe(500);
+    expect(ba.tables.account[0].kind).toBe('project');
+    expect(ba.tables.account[0].period_start).toBe(500);
+  });
+
+  it('专项↔普通的真实改动会 bump updated_at → 仍按 LWW 后写胜（本闸不干扰正常改动）', () => {
+    // 用户后来把它从专项改回普通：updated_at 更大 → 普通版本应胜（kind=null）。
+    const proj = snap({ account: [acctRow({ id: 'acc-p', updated_at: 1000, kind: 'project' })] });
+    const demotedLater = snap({ account: [acctRow({ id: 'acc-p', updated_at: 2000, kind: null })] });
+
+    const merged = mergeSnapshots(proj, demotedLater).merged;
+    expect(merged.tables.account[0].updated_at).toBe(2000);
+    expect(merged.tables.account[0].kind ?? null).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------
 // 可交换性：merge(a,b) 与 merge(b,a) 对每个 id 结论一致
 // ------------------------------------------------------------
 describe('可交换性（对每个 id 的赢家一致）', () => {

@@ -211,19 +211,48 @@ function mergeVersionedTable(localRows: Row[], remoteRows: Row[]): VersionedMerg
 }
 
 /**
- * 决定同一 id 的两行谁胜：updated_at 大者胜；相等时用键名排序后的 JSON
- * 字典序做确定性 tie-break（与入参顺序无关）。
+ * 决定同一 id 的两行谁胜：
+ *   1) updated_at 大者胜（LWW 后写胜）。
+ *   2) updated_at 相等（极罕见的真·同毫秒并发，或**降级客户端回灌**造成的伪并发）：
+ *      先比 v3 结构列完整度——保留信息更多的一方胜。这道闸专门挡住
+ *      "旧版本客户端（如未更新到 v3 的缓存 PWA）把 v3 账户经其无
+ *      kind/period/archived 列的 restore 往返后，kind 被抹成 NULL、却仍沿用原
+ *      updated_at 回推"的场景：否则 `"kind":null` 的 canonical JSON 字典序大于
+ *      `"kind":"project"`，会让被抹平的行赢下 tie-break，把专项账户悄悄降级成普通
+ *      账户并全设备扩散。合法的"专项↔普通"改动会 bump updated_at，走第 1 步正常
+ *      胜出，不受本闸影响。
+ *   3) 完整度也相同 → 回退键名排序后的 canonical JSON 字典序（确定性、与入参顺序无关）。
  */
 function pickWinnerSide(local: Row, remote: Row): 'local' | 'remote' {
   const lu = toNum(local.updated_at);
   const ru = toNum(remote.updated_at);
   if (lu > ru) return 'local';
   if (ru > lu) return 'remote';
-  // updated_at 相等：极罕见的同毫秒并发。按 canonical JSON 字典序，大者胜。
+  // updated_at 相等：先按 v3 结构列完整度裁决，保留信息更多的一方胜。
+  const lc = v3StructuralScore(local);
+  const rc = v3StructuralScore(remote);
+  if (lc > rc) return 'local';
+  if (rc > lc) return 'remote';
+  // 完整度相同：按 canonical JSON 字典序，大者胜。
   const ls = canonicalJson(local);
   const rs = canonicalJson(remote);
   if (ls === rs) return 'local'; // 内容全等：取谁都一样，固定取 local。
   return rs > ls ? 'remote' : 'local';
+}
+
+/**
+ * v3 账户结构列的"信息完整度"评分：统计 kind / period_start / period_end /
+ * archived_at 中的非空列数。仅用于 updated_at 相等时的 tie-break，挡住降级客户端
+ * 把这些列抹成 NULL 后回灌造成的静默降级。非 account 行本就没有这些列（归一化后
+ * 一律为 null），两侧评分恒为 0，落到 canonical JSON 兜底，行为与旧逻辑一致。
+ */
+function v3StructuralScore(row: Row): number {
+  let n = 0;
+  if (row.kind !== null && row.kind !== undefined) n += 1;
+  if (row.period_start !== null && row.period_start !== undefined) n += 1;
+  if (row.period_end !== null && row.period_end !== undefined) n += 1;
+  if (row.archived_at !== null && row.archived_at !== undefined) n += 1;
+  return n;
 }
 
 // ------------------------------------------------------------
