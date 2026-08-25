@@ -495,12 +495,14 @@ function onKeydown(e: KeyboardEvent): void {
 
   // 备注/标题等输入框聚焦时不拦截键盘。
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
-  // Esc 分层（与搜索页同思路）：先关删除确认 → 再关选择器浮层 →
-  //   金额非空则清空金额 → 金额为空则返回上一页。'c' 始终等于清空金额。
+  // Esc 分层：先关删除确认 → 再关选择器浮层 → 剩余按模式区分：
+  //   · 新建模式（与搜索页同思路）：金额非空先清空，再按 Esc 才返回；
+  //   · 编辑模式：金额本就是原交易预填值，清空它不直观且未保存无意义，
+  //     故直接返回（手误点进某笔交易，一次 Esc 即退出）。'c' 始终等于清空金额。
   if (e.key === 'Escape') {
     if (confirmingDelete.value) confirmingDelete.value = false;
     else if (openPicker.value) openPicker.value = null;
-    else if (raw.value) clearAll();
+    else if (!isEdit.value && raw.value) clearAll();
     else goBack();
     e.preventDefault();
     return;
@@ -847,7 +849,7 @@ onUnmounted(() => {
           </button>
           <div class="add-kbd-hint kbd-hint" aria-hidden="true">
             <span class="kbd">↵</span>保存
-            <span class="kbd">Esc</span>清空/返回
+            <span class="kbd">Esc</span>{{ isEdit ? '返回' : '清空/返回' }}
             <span class="kbd">C</span>清空
           </div>
           <!-- 编辑模式：删除入口（次级危险按钮，二次确认，不与保存混淆） -->
