@@ -79,6 +79,10 @@
   --sh-fab: 0 6px 16px rgba(26, 115, 232, 0.4);
 
   --tab-h: 60px;
+
+  /* 主内容最大宽度：大屏下把内容列收进一个舒适阅读宽度并居中，
+     避免卡片被拉得过宽、交易行「信息 ↔ 金额」间距过大。窄屏无影响（视口 < 该值）。 */
+  --content-max: 1080px;
 }
 
 /* 深色模式（保留 token，S2 暂不主动切换） */
@@ -236,7 +240,15 @@ svg { display: block; }
    右对齐、与页标题同高。空时不占位（无子元素时无视觉痕迹）。 */
 .topbar-slot { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
-.content { flex: 1; overflow: auto; padding: 22px; }
+.content {
+  flex: 1; overflow: auto;
+  /* 大屏内容不铺满：用「可增长的左右内边距」把常规页内容收进一个舒适阅读列并居中，
+     使卡片不过宽、交易行「标题 ↔ 金额」间距不过大。相较给每个子元素设 max-width+auto，
+     此法子元素仍占满内容列、不受各自 margin 影响（如 .divider），position:fixed 浮层也天然不受限。
+     窄屏 (≤720px) 由下方 S11 段的 padding 覆盖，(100%-max)/2 为负时取 22px 兜底。 */
+  padding: 22px;
+  padding-inline: max(22px, calc((100% - var(--content-max)) / 2));
+}
 .content::-webkit-scrollbar { width: 8px; }
 .content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
 
