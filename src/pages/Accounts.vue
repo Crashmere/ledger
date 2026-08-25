@@ -1163,6 +1163,24 @@ function txnAmountClass(t: TxnWithTags): string {
               </div>
             </div>
 
+            <!-- 账户类型：普通 ↔ 专项。切到专项即展开下方时间段/归档字段；
+                 专项账户交易被全局统计排除。允许把已建的普通账户改为专项（反之亦然）。 -->
+            <div class="field">
+              <label class="field-label">账户类型</label>
+              <div class="row gap-3">
+                <button
+                  class="switch"
+                  :class="{ on: fKind === 'project' }"
+                  role="switch"
+                  :aria-checked="fKind === 'project'"
+                  @click="fKind = fKind === 'project' ? 'normal' : 'project'"
+                >
+                  <span class="knob" />
+                </button>
+                <span class="faint" style="font-size: 13px">{{ fKind === 'project' ? '专项账户（不计入日常统计）' : '普通账户' }}</span>
+              </div>
+            </div>
+
             <!-- 专项账户专属：时间段 + 归档。专项账户交易被全局统计排除。 -->
             <template v-if="fKind === 'project'">
               <div class="divider" style="margin: 2px 0" />
