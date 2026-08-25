@@ -1278,10 +1278,13 @@ function clearAll(): void {
   font-size: 24px;
 }
 
-/* 双栏：左结果自适应、右详情固定 320px（对照设计稿桌面稿）。 */
+/* 双栏：左结果自适应、右详情固定 320px（对照设计稿桌面稿）。
+   左轨道用 minmax(0, 1fr) 而非 1fr：1fr 最小尺寸默认为 min-content，
+   命中行里 nowrap 的超长备注/标题会把左列撑爆、整页横向溢出、省略号失效。
+   压成最小 0 后左列可收缩到容器内，超长文本由各自的 ellipsis 隐藏。 */
 .search-two-col {
   height: auto;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   align-items: start;
 }
 

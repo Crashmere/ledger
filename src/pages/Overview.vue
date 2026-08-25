@@ -496,9 +496,12 @@ function txnAmountClass(t: TxnWithTags): string {
   text-overflow: ellipsis;
 }
 
-/* 概览双栏：左流水自适应、右侧固定 360px（对照设计稿桌面双栏）。 */
+/* 概览双栏：左流水自适应、右侧固定 360px（对照设计稿桌面双栏）。
+   左轨道用 minmax(0, 1fr) 而非 1fr：1fr 最小尺寸默认为 min-content，
+   流水行里 nowrap 的超长备注会把左列撑爆、整页横向溢出、省略号失效。
+   压成最小 0 后左列可收缩到容器内，超长备注由 .txn-note 的 ellipsis 隐藏。 */
 .ov-two-col {
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   align-items: start;
 }
 

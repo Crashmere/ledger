@@ -1286,9 +1286,12 @@ function txnAmountClass(t: TxnWithTags): string {
   box-shadow: var(--sh-1);
 }
 
-/* 账户视图双栏：左固定 340px、右自适应，顶对齐 */
+/* 账户视图双栏：左固定 340px、右自适应，顶对齐。
+   右轨道用 minmax(0, 1fr) 而非 1fr：1fr 的最小尺寸默认为 min-content，
+   对 nowrap 的 .txn-note（超长备注）来说 min-content = 整段文字宽，会把轨道/整页撑爆、
+   省略号失效。压成最小 0 后，列宽即备注最大宽度，超出由 .txn-note 的 ellipsis 隐藏。 */
 .acc-two-col {
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 340px minmax(0, 1fr);
   align-items: start;
 }
 .acc-list-card {
