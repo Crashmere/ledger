@@ -48,6 +48,11 @@ function openEdit(id: Id): void {
   void router.push(`/txn/${id}/edit`);
 }
 
+/** 详情卡「复制」→ 以该笔为模板进入记一笔（新建模式，日期取今天）。 */
+function copyTxn(id: Id): void {
+  void router.push({ path: '/add', query: { copy: id } });
+}
+
 // ============================================================
 // 关键词（前端过滤，纯同步）
 // ============================================================
@@ -1052,6 +1057,13 @@ function clearAll(): void {
                     <path d="M11 4H4v16h16v-7M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z" />
                   </svg>
                   编辑
+                </button>
+                <button class="btn btn-ghost btn-sm btn-block" @click="copyTxn(selectedTxn.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="11" height="11" rx="2" />
+                    <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                  </svg>
+                  复制
                 </button>
               </div>
             </template>

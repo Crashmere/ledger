@@ -20,6 +20,8 @@
 //       编辑保存/删除成功后返回来源页（router.back，兜底 push /overview），不做连续记账清空。
 //   · 删除：编辑界面内二次确认 → txnService.remove(id)（硬删，CASCADE 清 txn_tag）。
 //   · 组件复用：watch route.params.id 重跑初始化，避免编辑A→编辑B/编辑→新建残留上一笔。
+// 复制模式（/add?copy=<id>，仍属新建）：以某笔为模板照搬全字段，唯独日期取今天，保存走 create。
+//   入口：搜索页详情卡「复制」、编辑页底部「复制这一笔」。源交易被删则静默退化为普通新建。
 // 智能默认（仅新建）：类型=支出、账户=上次使用（SettingService last_account_id）、日期=今天。
 // ============================================================
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
@@ -53,6 +55,12 @@ const editingId = computed<Id | null>(() => {
   return typeof p === 'string' && p ? p : null;
 });
 const isEdit = computed(() => editingId.value !== null);
+// 复制模式：/add?copy=<id>（无 route.params.id，仍属「新建」）——以某笔为模板，
+// 除日期取今天外全字段照搬。isEdit 仍为 false，故保存走 create、支持连续记账。
+const copyingId = computed<Id | null>(() => {
+  const q = route.query.copy;
+  return typeof q === 'string' && q ? q : null;
+});
 
 // ---------- 数据源 ----------
 const accounts = ref<Account[]>([]);
@@ -467,6 +475,13 @@ function goBack(): void {
   }
 }
 
+/** 编辑模式「复制这一笔」：以当前正在编辑的交易为模板另开一笔新建（日期取今天）。
+ *  用 replace 而非 push，避免返回时又回到编辑页；同实例下 watch(copyingId) 会重跑 initForm。 */
+function copyCurrent(): void {
+  if (!editingId.value) return;
+  void router.replace({ path: '/add', query: { copy: editingId.value } });
+}
+
 // ============================================================
 // 物理键盘（辅助，非必需）
 // ============================================================
@@ -591,6 +606,29 @@ async function initEdit(id: Id): Promise<void> {
   categoryId.value = txn.type === 'transfer' ? null : txn.categoryId;
 }
 
+/** 复制模式（新建，/add?copy=<id>）：以某笔为模板照搬全字段，唯独日期取今天。
+ *  取不到源交易时静默退化为普通新建（智能默认），不打断记账。
+ *  回填顺序坑位同编辑：先 loadCategories 再赋 categoryId。 */
+async function initCopy(id: Id): Promise<void> {
+  const txn = await txnService.get(id);
+  if (!txn) {
+    await initCreate(); // 源已删除：退化为普通新建，不报错打断
+    return;
+  }
+
+  type.value = txn.type;
+  accountId.value = txn.accountId;
+  toAccountId.value = txn.type === 'transfer' ? txn.toAccountId : null;
+  raw.value = centsToYuan(txn.amount); // 金额分→元字符串（同编辑回填）
+  dateStr.value = todayStr(); // 复制的唯一差异：日期取今天
+  title.value = txn.title ?? '';
+  note.value = txn.note ?? '';
+  selectedTagIds.value = txn.tags.map((t) => t.id);
+
+  await loadCategories();
+  categoryId.value = txn.type === 'transfer' ? null : txn.categoryId;
+}
+
 /** 统一初始化：先备好基础数据源，再按模式分叉。watch 复用同一实例时也走这里。 */
 async function initForm(): Promise<void> {
   resetFormState();
@@ -600,6 +638,8 @@ async function initForm(): Promise<void> {
   const id = editingId.value;
   if (id) {
     await initEdit(id);
+  } else if (copyingId.value) {
+    await initCopy(copyingId.value);
   } else {
     await initCreate();
   }
@@ -610,8 +650,9 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown);
 });
 
-// 组件复用（坑位⑤）：编辑A→编辑B、或编辑→新建（route 变化但同一 AddTxn 实例）时重跑初始化。
-watch(editingId, () => {
+// 组件复用（坑位⑤）：编辑A→编辑B、或编辑→新建/复制（route 变化但同一 AddTxn 实例）时重跑初始化。
+// 同时监听 copyingId：/add → /add?copy=x 时 editingId 恒为 null 不会触发，需 copyingId 兜底。
+watch([editingId, copyingId], () => {
   void initForm();
 });
 
@@ -852,6 +893,19 @@ onUnmounted(() => {
             <span class="kbd">Esc</span>{{ isEdit ? '返回' : '清空/返回' }}
             <span class="kbd">C</span>清空
           </div>
+          <!-- 编辑模式：复制入口（照搬本笔另开新建，日期取今天）——放在删除前，低调次级按钮 -->
+          <button
+            v-if="isEdit"
+            class="btn btn-ghost btn-block mt-2"
+            :disabled="saving || deleting"
+            @click="copyCurrent"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="11" height="11" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+            复制这一笔
+          </button>
           <!-- 编辑模式：删除入口（次级危险按钮，二次确认，不与保存混淆） -->
           <button
             v-if="isEdit"
