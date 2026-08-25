@@ -245,9 +245,14 @@ svg { display: block; }
   /* 大屏内容不铺满：用「可增长的左右内边距」把常规页内容收进一个舒适阅读列并居中，
      使卡片不过宽、交易行「标题 ↔ 金额」间距不过大。相较给每个子元素设 max-width+auto，
      此法子元素仍占满内容列、不受各自 margin 影响（如 .divider），position:fixed 浮层也天然不受限。
-     窄屏 (≤720px) 由下方 S11 段的 padding 覆盖，(100%-max)/2 为负时取 22px 兜底。 */
+     两段取 max：
+       ① clamp(24px, 5vw, 220px)：随窗口按比例伸缩的「保底侧留白」。即使内容区 < --content-max
+          （如带系统缩放的外接屏，网页有效宽仅 ~1173px、内容区仅 ~953px，居中项恒为负）时，
+          仍保证桌面右侧有明显留白，不会「顶到最右」。
+       ② (100%-max)/2：内容区足够宽时把内容居中收进 --content-max 阅读列，留白更大者胜出。
+     窄屏 (≤720px) 由下方 S11 段的 padding 覆盖。 */
   padding: 22px;
-  padding-inline: max(22px, calc((100% - var(--content-max)) / 2));
+  padding-inline: max(clamp(24px, 5vw, 220px), calc((100% - var(--content-max)) / 2));
 }
 .content::-webkit-scrollbar { width: 8px; }
 .content::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
