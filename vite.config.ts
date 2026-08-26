@@ -27,7 +27,7 @@ export default defineConfig({
       // 字体已自托管在 src/assets/fonts，经 Vite 打包进产物清单，无需在此列出。
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: '记账 · 本地优先',
+        name: '记账',
         short_name: '记账',
         description: '本地优先的个人记账应用，数据存于设备、断网可用。',
         lang: 'zh-CN',
