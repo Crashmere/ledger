@@ -200,27 +200,53 @@ onMounted(async () => {
 watch(activeQuery, () => void load(), { deep: true });
 
 // ============================================================
+// 临时排除（纯前端会话态，不落库、不同步）：把命中结果里的个别交易手动移出，
+//   使其从列表与全部汇总（命中笔数 / 收支合计 / 折合全年）中一并消失。
+//   典型用途：搜「电动车充电」估折合全年时，剔除混进来的「电动车充电器」这类
+//   同词干干扰项，免去绕道账户/分类筛选。仅本次会话有效，点「恢复」或「清空」即还原。
+// ============================================================
+const excludedIds = ref<Set<Id>>(new Set());
+const excludedCount = computed<number>(() => excludedIds.value.size);
+function excludeTxn(id: Id): void {
+  const next = new Set(excludedIds.value);
+  next.add(id);
+  excludedIds.value = next;
+  // 被排除的若正选中，详情卡随之回占位（selectedTxn 依赖 hitTxns 会自动失效，这里同步清引用）。
+  if (selectedId.value === id) selectedId.value = null;
+}
+function restoreExcluded(): void {
+  if (excludedIds.value.size) excludedIds.value = new Set();
+}
+
+// ============================================================
 // 关键词前端过滤（§四.3）：在【搜索范围】勾选的字段里匹配 kw（不区分大小写）。
 //   范围决定参与匹配的字段（标题/备注/分类名/任一标签名），默认四项全含。
+//   末尾再叠加【临时排除】：被手动移出的交易不进结果，故所有下游汇总天然同步。
 // ============================================================
 const hitTxns = computed<TxnWithTags[]>(() => {
+  const excluded = excludedIds.value;
   const kw = keyword.value.trim().toLowerCase();
-  if (!kw) return baseTxns.value;
-  const fields = searchFields.value;
-  const useTitle = fields.includes('title');
-  const useNote = fields.includes('note');
-  const useCat = fields.includes('category');
-  const useTag = fields.includes('tag');
-  return baseTxns.value.filter((t) => {
-    if (useTitle && t.title && t.title.toLowerCase().includes(kw)) return true;
-    if (useNote && t.note && t.note.toLowerCase().includes(kw)) return true;
-    if (useCat) {
-      const catName = t.categoryId ? categoryById.value.get(t.categoryId)?.name : '';
-      if (catName && catName.toLowerCase().includes(kw)) return true;
-    }
-    if (useTag && t.tags.some((tag) => tag.name.toLowerCase().includes(kw))) return true;
-    return false;
-  });
+  let list: TxnWithTags[];
+  if (!kw) {
+    list = baseTxns.value;
+  } else {
+    const fields = searchFields.value;
+    const useTitle = fields.includes('title');
+    const useNote = fields.includes('note');
+    const useCat = fields.includes('category');
+    const useTag = fields.includes('tag');
+    list = baseTxns.value.filter((t) => {
+      if (useTitle && t.title && t.title.toLowerCase().includes(kw)) return true;
+      if (useNote && t.note && t.note.toLowerCase().includes(kw)) return true;
+      if (useCat) {
+        const catName = t.categoryId ? categoryById.value.get(t.categoryId)?.name : '';
+        if (catName && catName.toLowerCase().includes(kw)) return true;
+      }
+      if (useTag && t.tags.some((tag) => tag.name.toLowerCase().includes(kw))) return true;
+      return false;
+    });
+  }
+  return excluded.size ? list.filter((t) => !excluded.has(t.id)) : list;
 });
 
 // ============================================================
@@ -626,7 +652,8 @@ const hasAnyFilter = computed(
     selectedCategoryNames.value.length > 0 ||
     selectedTagIds.value.length > 0 ||
     hasAmountChip.value ||
-    keyword.value.trim().length > 0,
+    keyword.value.trim().length > 0 ||
+    excludedIds.value.size > 0,
 );
 function clearAll(): void {
   selectedTypes.value = [];
@@ -636,6 +663,7 @@ function clearAll(): void {
   clearAmount();
   keyword.value = '';
   searchFields.value = [...DEFAULT_SEARCH_FIELDS];
+  excludedIds.value = new Set();
 }
 </script>
 
@@ -645,6 +673,17 @@ function clearAll(): void {
     <div class="search-head">
       <span class="page-sub">共</span>
       <span class="badge badge-expense">命中 {{ hitCount }} 笔</span>
+      <span
+        v-if="excludedCount"
+        class="excluded-note"
+        role="button"
+        tabindex="0"
+        title="恢复被临时排除的交易"
+        @click="restoreExcluded()"
+        @keydown.enter="restoreExcluded()"
+      >
+        已排除 {{ excludedCount }} 条 · 恢复
+      </span>
       <span class="kbd-hint search-kbd" aria-hidden="true">
         <span class="kbd">↑</span><span class="kbd">↓</span>选择
         <span class="kbd">↵</span>编辑
@@ -961,6 +1000,18 @@ function clearAll(): void {
               <div class="txn-amt num" :class="txnAmountClass(t)">{{ txnAmountText(t) }}</div>
               <div class="txn-date">{{ rowDateText(t) }}</div>
             </div>
+            <button
+              class="txn-exclude"
+              type="button"
+              aria-label="排除此条"
+              title="从结果与统计中排除此条"
+              @click.stop="excludeTxn(t.id)"
+              @keydown.enter.stop="excludeTxn(t.id)"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -1065,6 +1116,17 @@ function clearAll(): void {
                   </svg>
                   复制
                 </button>
+                <button
+                  class="btn btn-ghost btn-sm btn-block"
+                  title="从结果与统计中排除此条（临时，可恢复）"
+                  @click="excludeTxn(selectedTxn.id)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M6 6l12 12" />
+                  </svg>
+                  排除
+                </button>
               </div>
             </template>
           </div>
@@ -1090,6 +1152,21 @@ function clearAll(): void {
 /* 搜索页快捷键提示：推到该行最右，轻量、不抢眼（手机端由 tokens.css 统一隐藏）。 */
 .search-head .search-kbd { margin-left: auto; gap: 4px; }
 .search-head .search-kbd .kbd { margin-left: 2px; }
+
+/* 已临时排除的提示：轻量可点，点击恢复全部被排除项（会话态）。 */
+.search-head .excluded-note {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--fg-3);
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-pill);
+  padding: 2px 8px;
+}
+.search-head .excluded-note:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+}
 
 /* 展示排序下拉（嵌在 pill 里的原生 select，去边框透明化；从报告页迁入） */
 .sort-select {
@@ -1354,6 +1431,33 @@ function clearAll(): void {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 行内「排除」叉：默认隐形不占视觉，hover / 聚焦该行或按钮本身时淡出，
+   触屏（无 hover）恒显以便点按。轻量圆钮，点击将该行移出结果与统计。 */
+.txn-exclude {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--fg-3);
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.txn-clickable:hover .txn-exclude,
+.txn-clickable:focus-within .txn-exclude,
+.txn-exclude:focus-visible {
+  opacity: 1;
+}
+.txn-exclude:hover {
+  background: var(--expense-soft);
+  color: var(--expense);
+}
+@media (hover: none) {
+  .txn-exclude { opacity: 1; }
 }
 
 /* 详情键值行（照抄设计稿） */
